@@ -1,0 +1,29 @@
+{
+  "name": "@tts-workbench/account-core",
+  "version": "0.1.1",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "@nestjs/common": "^12.0.1",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "dependencies": {
+    "@node-rs/argon2": "2.2.0",
+    "zod": "4.5.4"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

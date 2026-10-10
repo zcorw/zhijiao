@@ -1,0 +1,39 @@
+{
+  "name": "zhijiao",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "vendor/nest-account/packages/*"
+  ],
+  "scripts": {
+    "build:base": "npm run build -w @tts-workbench/account-core && npm run build -w @tts-workbench/account-postgres && npm run build -w @zhijiao/shared",
+    "build": "npm run build:base && npm run build -w @zhijiao/client && npm run build -w @zhijiao/web && npm run build -w @zhijiao/server",
+    "typecheck": "npm run build:base && npm run typecheck --workspaces --if-present",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:e2e": "playwright test",
+    "dev": "npm run dev -w @zhijiao/web",
+    "start": "npm run start -w @zhijiao/server",
+    "migrate": "npm run migrate -w @zhijiao/server",
+    "account": "npm run account -w @zhijiao/server"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.1",
+    "@playwright/test": "1.64.0",
+    "@types/node": "22.18.6",
+    "eslint": "9.39.1",
+    "eslint-plugin-vue": "10.5.1",
+    "fake-indexeddb": "6.2.4",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.46.1",
+    "vitest": "3.2.4",
+    "vite": "7.3.7"
+  }
+}

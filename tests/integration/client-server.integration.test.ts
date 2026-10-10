@@ -1,0 +1,107 @@
+import 'reflect-metadata';
+import { randomUUID } from 'node:crypto';
+import { beforeAll, afterAll, describe, expect, it } from 'vitest';
+import { Pool } from 'pg';
+import { AccountService, argon2Passwords } from '@tts-workbench/account-core';
+import { PostgresAccountRepository } from '@tts-workbench/account-postgres';
+import type { Person, Interaction, PersonReflection, ReflectionInteraction } from '@zhijiao/shared';
+import { VaultClient } from '../../packages/client/src/client.js';
+import { HttpVaultTransport } from '../../packages/client/src/transport.js';
+import { MemoryStore } from '../../packages/client/src/storage.js';
+import { createApplication } from '../../apps/server/src/app.js';
+import { migrate } from '../../apps/server/src/migrate.js';
+import type { AppConfig } from '../../apps/server/src/config.js';
+
+const databaseUrl = process.env.TEST_DATABASE_URL;
+if (databaseUrl && !/(test|ci)/i.test(new URL(databaseUrl).pathname)) throw new Error('Disposable test database required.');
+const suite = databaseUrl ? describe : describe.skip;
+suite('real client encryption over authenticated HTTP and PostgreSQL', () => {
+  let pool: Pool, server: Awaited<ReturnType<typeof createApplication>>, ownerId: string;
+  let transport: HttpVaultTransport;
+  const phrase = 'fictional vault unlock phrase for tests';
+  const config: AppConfig = { database: { connectionString: databaseUrl }, origin: 'http://localhost:3000',
+    secret: 'fictional-client-integration-session-secret', secure: false, idleMs: 60000, absoluteMs: 3600000, trustProxy: 0, port: 3000 };
+  beforeAll(async () => {
+    pool = new Pool({ connectionString: databaseUrl }); await migrate(pool);
+    const db = await pool.connect();
+    try {
+      await db.query('BEGIN'); await db.query('SELECT id FROM ac_accounts FOR UPDATE');
+      for (const table of ['zj_operations','zj_changelog','zj_current','zj_versions','zj_key_bundles','zj_vaults','zj_login_limits','ac_sessions','ac_session_revocations','ac_accounts']) await db.query(`DELETE FROM ${table}`);
+      await db.query('COMMIT');
+    } catch (error) { await db.query('ROLLBACK'); throw error; } finally { db.release(); }
+    const accounts = new AccountService({ repository: new PostgresAccountRepository(pool), passwords: argon2Passwords, randomId: randomUUID });
+    ownerId = (await accounts.createAccount({ login: 'fictional-wire', displayName: 'Fictional Wire', password: 'fictional-login-password' })).id;
+    server = await createApplication(config, pool); await server.app.listen(0, '127.0.0.1');
+    let cookie = '';
+    const request: typeof fetch = async (input, init) => {
+      const headers = new Headers(init?.headers); headers.set('origin', config.origin); if (cookie) headers.set('cookie', cookie);
+      const response = await fetch(input, { ...init, headers });
+      const changed = response.headers.getSetCookie().find(v => v.startsWith('zj_session=')); if (changed) cookie = changed.split(';')[0];
+      return response;
+    };
+    transport = new HttpVaultTransport((await server.app.getUrl()) + '/api', request);
+    transport.csrfToken = (await transport.request<{csrfToken:string}>('/auth/csrf')).csrfToken;
+    transport.csrfToken = (await transport.request<{csrfToken:string}>('/auth/login', { method:'POST', body:JSON.stringify({login:'fictional-wire',password:'fictional-login-password'}) })).csrfToken;
+  });
+  afterAll(async () => { await server?.close(); await pool?.end(); });
+  const base = () => ({ id:randomUUID(), ownerId, createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() });
+  it('syncs directory first, resolves offline CAS explicitly, restores history and keeps group relationships', async () => {
+    const first = new VaultClient({ transport, store:new MemoryStore(), ownerId, autoSync:false });
+    const { vault, recoverySecret } = await first.setup(phrase); await first.sync();
+    const a: Person = {...base(),kind:'person',displayName:'虚构人物林青',aliases:['小林'],summary:'虚构读书会朋友',status:'active'};
+    const b: Person = {...base(),kind:'person',displayName:'虚构人物张宁',status:'active'};
+    const event: Interaction = {...base(),kind:'interaction',title:'虚构三人散步',participantIds:[a.id,b.id],content:'仅供测试的事件'};
+    const reflection: PersonReflection = {...base(),kind:'reflection',personId:a.id,type:'feeling',content:'仅供测试的感受',status:'current'};
+    const link: ReflectionInteraction = {...base(),kind:'reflectionLink',reflectionId:reflection.id,interactionId:event.id,relationType:'arose'};
+    await first.saveBatch([a,b,event,reflection,link]); await first.sync();
+    const stored = await pool.query('SELECT ciphertext FROM zj_versions WHERE vault_id=$1', [vault.id]);
+    expect(stored.rows.every(row => !(row.ciphertext as Buffer).includes(Buffer.from('虚构')))).toBe(true);
+    const second = new VaultClient({ transport, store:new MemoryStore(), ownerId, autoSync:false });
+    await second.open(vault.id); await second.unlock(recoverySecret,{recovery:true}); await second.sync();
+    expect(second.searchPeople('lq').entries.map(p=>p.personId)).toContain(a.id);
+    expect(second.state).toMatchObject({directoryComplete:true,recordsComplete:true,pending:0});
+    await first.put({...a,displayName:'虚构人物林青新版'}); await first.sync();
+    await second.put({...a,displayName:'虚构离线候选'}); await second.sync();
+    expect(second.state.conflicts).toBe(1);
+    const conflicts = await second.conflicts();
+    expect(conflicts[0].local.some(e=>'displayName' in e&&e.displayName==='虚构离线候选')).toBe(true);
+    await second.discardConflict(conflicts[0].operationId); await second.sync();
+    expect(second.entities.find(e=>e.id===a.id)).toMatchObject({displayName:'虚构人物林青新版'});
+    await first.restore(a.id,'1'); await first.sync();
+    expect(first.entities.find(e=>e.id===a.id)).toMatchObject({displayName:a.displayName});
+    expect((await first.history(a.id)).map(h=>h.revision)).toEqual(['1','2','3']);
+    await first.delete(a.id); await first.sync(); await second.sync();
+    expect(second.entities.find(e=>e.id===event.id)).toMatchObject({participantIds:[b.id]});
+    expect(second.entities.some(e=>e.id===a.id||e.id===reflection.id||e.id===link.id)).toBe(false);
+    expect(second.directoryEntries.some(e=>e.personId===a.id)).toBe(false);
+    first.lock(); second.lock(); expect(first.entities).toEqual([]);
+  }, 30000);
+  it('rotates the key over the actual API, rejects stale-device writes and restores independent snapshots', async () => {
+    const first = new VaultClient({transport,store:new MemoryStore(),ownerId,autoSync:false});
+    const initial = await first.setup(phrase); await first.sync();
+    const person: Person = {...base(),kind:'person',displayName:'虚构密钥轮换人物',status:'active'};
+    await first.put(person); await first.sync();
+    const oldBackup = await first.exportBackup();
+    const stale = new VaultClient({transport,store:new MemoryStore(),ownerId,autoSync:false});
+    await stale.open(initial.vault.id); await stale.unlock(phrase); await stale.sync();
+    await stale.put({...person,summary:'虚构离线候选须保留'});
+    const rotated = await first.rotateDataKey('fictional new vault unlock phrase');
+    expect((first.vault!.keyBundle as {keyVersion:number}).keyVersion).toBe(2);
+    await expect(stale.sync()).rejects.toThrow('KEY_ROTATED_REUNLOCK_REQUIRED');
+    const fresh = new VaultClient({transport,store:new MemoryStore(),ownerId,autoSync:false});
+    await fresh.open(initial.vault.id); await fresh.unlock(rotated.recoverySecret,{recovery:true}); await fresh.sync();
+    expect(fresh.entities.find(e=>e.id===person.id)).toMatchObject({displayName:person.displayName});
+    expect((await fresh.history(person.id)).length).toBeGreaterThanOrEqual(2);
+    await fresh.restore(person.id,'1'); await fresh.sync();
+    const currentVersion = (await pool.query('SELECT v.key_version FROM zj_current c JOIN zj_versions v USING(vault_id,record_id,revision) WHERE c.vault_id=$1 AND c.record_id=$2',[initial.vault.id,person.id])).rows[0];
+    expect(currentVersion.key_version).toBe(2);
+    const recovery = new VaultClient({transport,store:new MemoryStore(),ownerId,autoSync:false});
+    const preview = await recovery.previewBackup(oldBackup,initial.recoverySecret,{recovery:true});
+    await recovery.importBackup(preview,{confirm:true}); await recovery.unlock(initial.recoverySecret,{recovery:true});
+    expect(recovery.entities.find(e=>e.id===person.id)).toMatchObject({displayName:person.displayName});
+    const latestBackup = await fresh.exportBackup();
+    const latestPreview = await recovery.previewBackup(latestBackup,rotated.recoverySecret,{recovery:true});
+    expect(latestPreview.people).toBe(1);
+    first.lock();stale.lock();fresh.lock();recovery.lock();
+  }, 30000);
+});
