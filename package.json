@@ -14,7 +14,7 @@
   "scripts": {
     "build:base": "npm run build -w @tts-workbench/account-core && npm run build -w @tts-workbench/account-postgres && npm run build -w @zhijiao/shared",
     "build": "npm run build:base && npm run build -w @zhijiao/client && npm run build -w @zhijiao/web && npm run build -w @zhijiao/server",
-    "typecheck": "npm run build:base && npm run typecheck --workspaces --if-present",
+    "typecheck": "npm run build:base && npm run build -w @zhijiao/client && npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",

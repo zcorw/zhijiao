@@ -33,9 +33,11 @@ PG覆盖会话撤销/重置/保存并发、禁用账号、Origin/CSRF/限流/Sec
 
 调试曾修复原生fetch receiver、Zod JIT/严格CSP、横图裁剪边界和avatar badge定位。测试标题/Origin不匹配按实际页面/配置修正，未降低Origin或CSP。反复登录曾正常触发15分钟限流429；不清空或放宽限制，窗口结束后复核。并行测试库清理冲突用隔离/顺序修正，最终PG通过。
 
+首次提交177ec3c的GitHub CI在干净安装的typecheck中失败：Vue引用的客户端声明尚未生成，本机已有dist掩盖了构建顺序遗漏。已修正根typecheck先生成客户端声明，再执行各workspace检查；使用没有本机构建产物的全新Docker上下文复核。没有通过放宽类型检查或提交dist解决。
+
 真实应用备份：27个密文版本、19current、27changelog、11operation、密钥包和8个main/thumb资产版本（32,272密文字节）。源/恢复业务快照SHA-256同为 fbe7cc392de49d3d65cb0c210206e5378236a29949aa8221c84e45b1ac8672d0。恢复库随后独立事务撤销旧会话，不改变登录密码或解密密钥；新浏览器实际解密通过。此前合成夹具仅验证备份/PG字节与错误路径，未冒充真实AEAD/图片验收。[operations.md](operations.md)记录两层证据。
 
-虚构测试截图存 docs/screenshots，通过私有GitHub正常文件访问交付；运行配置/秘密/PG数据/下载链接/测试产物及一次性age身份均不上传。最终本机镜像ID为 sha256:5fd74c8a907a666b507c4a969d3f9a26674a8bf5a6784dc69cd6ef0adb521537；这是本机构建ID，没有GHCR registry digest。
+虚构测试截图存 docs/screenshots，通过私有GitHub正常文件访问交付；运行配置/秘密/PG数据/下载链接/测试产物及一次性age身份均不上传。最终本机镜像ID为 sha256:95430ac6b1f5f1488fa53b83b66ae905412617928d1f2c1af6ca6154e4e687e0；这是本机构建ID，没有GHCR registry digest。
 
 ## 仍缺与限制
 
