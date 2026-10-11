@@ -11,6 +11,7 @@
   "dependencies": {
     "@zhijiao/client": "0.1.0",
     "@zhijiao/shared": "0.1.0",
+    "vee-validate": "4.15.1",
     "vue": "3.5.43"
   },
   "devDependencies": {

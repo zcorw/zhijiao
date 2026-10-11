@@ -11,20 +11,20 @@ async function enter(page:Page) {
     }
   });
   await page.goto('/');
-  await page.getByLabel('登录名',{exact:true}).fill('fictional-ui');
-  await page.getByLabel('登录密码',{exact:true}).fill('fictional-login-password');
+  await page.locator('[name="login"]').fill('fictional-ui');
+  await page.locator('[name="password"]').fill('fictional-login-password');
   await page.getByRole('button',{name:'登录',exact:true}).click();
   const create=page.getByRole('heading',{name:'创建私人资料库'});
   await expect(create.or(page.getByRole('heading',{name:'打开你的资料库'}))).toBeVisible();
   if(await create.isVisible()) {
     await page.getByLabel('解锁口令（至少 12 个字符）').fill(unlockPhrase);
-    await page.getByLabel('再次输入',{exact:true}).fill(unlockPhrase);
+    await page.locator('[name="setupRepeated"]').fill(unlockPhrase);
     await page.getByRole('button',{name:'创建资料库',exact:true}).click();
     await expect(page.getByRole('heading',{name:'保存独立恢复秘密'})).toBeVisible();
     await page.getByRole('checkbox',{name:'我已安全保存，并理解丢失后的风险'}).check();
     await page.getByRole('button',{name:'进入知交',exact:true}).click();
   } else {
-    await page.getByLabel('资料库解锁口令',{exact:true}).fill(unlockPhrase);
+    await page.locator('[name="unlockSecret"]').fill(unlockPhrase);
     await page.getByRole('button',{name:'解锁资料库',exact:true}).click();
   }
   await expect(page.getByRole('button',{name:'记一笔',exact:true}).first()).toBeVisible();
@@ -53,7 +53,7 @@ test('desktop: real encrypted CRUD, repeated save, search and lock', async({page
   await page.getByRole('button',{name:'首页',exact:true}).first().click();
   await page.getByRole('button',{name:'记一笔',exact:true}).first().click();
   const journal=page.getByRole('dialog',{name:'记一笔'});
-  await journal.getByRole('button',{name:'和谁在一起 *',exact:true}).click();
+  await journal.locator('[name="people"]').click();
   const picker=page.getByRole('dialog',{name:'选择人物'});
   await expect(picker.getByRole('textbox',{name:'搜索人物'})).not.toBeFocused();
   await picker.getByRole('textbox',{name:'搜索人物'}).fill(name);
@@ -89,7 +89,7 @@ test('desktop: real encrypted CRUD, repeated save, search and lock', async({page
   await page.getByRole('button',{name:'人物',exact:true}).first().click();
   await expect(page.locator('.person-card').filter({hasText:name})).toHaveCount(1);
   await page.getByRole('button',{name:'锁定',exact:true}).first().click();
-  await expect(page.getByLabel('资料库解锁口令',{exact:true})).toBeVisible();
+  await expect(page.locator('[name="unlockSecret"]')).toBeVisible();
   await expect(page.getByText(event,{exact:true})).not.toBeVisible();
   await expect(page.locator('img[src^="blob:"]')).toHaveCount(0);
   expect(errors).toEqual([]);
@@ -98,20 +98,20 @@ test('phone: cross-query selection, quick-create cancel, Back, offline reload',a
   await page.setViewportSize({width:390,height:844});await enter(page);
   await page.getByRole('button',{name:'记一笔',exact:true}).first().click();
   let journal=page.getByRole('dialog',{name:'记一笔'});
-  await journal.getByRole('button',{name:'和谁在一起 *',exact:true}).click();
+  await journal.locator('[name="people"]').click();
   const picker=page.getByRole('dialog',{name:'选择人物'});
   const query=picker.getByRole('textbox',{name:'搜索人物'});
   await expect(query).not.toBeFocused();
   const cancelledName=`虚构取消新建${Date.now()}`;
   await query.fill(cancelledName);await picker.getByRole('button',{name:new RegExp(`新建「${cancelledName}」并选中`)}).click();
   await picker.getByRole('button',{name:'取消',exact:true}).click();
-  await journal.getByRole('button',{name:'和谁在一起 *',exact:true}).click();
+  await journal.locator('[name="people"]').click();
   await query.fill(cancelledName);await expect(picker.getByText('没有找到匹配人物',{exact:true})).toBeVisible();
   await picker.getByRole('button',{name:'取消',exact:true}).click();
   await page.screenshot({path:'.local/screenshots/mobile-journal.png',fullPage:true});
   await journal.getByRole('button',{name:'取消',exact:true}).click();
   await page.getByRole('button',{name:'记一笔',exact:true}).first().click();
-  journal=page.getByRole('dialog',{name:'记一笔'});await journal.getByRole('button',{name:'和谁在一起 *',exact:true}).click();
+  journal=page.getByRole('dialog',{name:'记一笔'});await journal.locator('[name="people"]').click();
   await query.fill('lq');await picker.getByRole('button').filter({hasText:'虚构林青'}).first().click();
   for(const name of [`虚构多选甲${Date.now()}`,`虚构多选乙${Date.now()}`]) {
     await query.fill(name);await picker.getByRole('button',{name:new RegExp(`新建「${name}」并选中`)}).click();
@@ -133,7 +133,7 @@ test('phone: cross-query selection, quick-create cancel, Back, offline reload',a
   await expect(page.getByText('打开已缓存的本机资料库',{exact:true})).toBeVisible();
   await page.getByText('打开已缓存的本机资料库',{exact:true}).click();
   await page.getByRole('button',{name:/本机资料库 ·/}).first().click();
-  await page.getByLabel('资料库解锁口令',{exact:true}).fill(unlockPhrase);
+  await page.locator('[name="unlockSecret"]').fill(unlockPhrase);
   await page.getByRole('button',{name:'解锁资料库',exact:true}).click();
   await expect(page.getByRole('button',{name:'记一笔',exact:true}).first()).toBeVisible();
   await page.screenshot({path:'.local/screenshots/mobile-offline.png',fullPage:true});

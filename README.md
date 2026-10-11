@@ -31,7 +31,7 @@ npm run build
 
 PostgreSQL 集成检查使用专用空测试数据库，`TEST_DATABASE_URL` 指向该数据库，随后运行 `npm run test:integration`。测试会创建和清理测试数据，不能使用生产数据库。浏览器端验证使用 `npm run test:e2e`，需要本机可用的 Playwright 浏览器和测试服务；首次运行的完整条件应以测试文件为准。
 
-Windows 沙箱中 esbuild 配置加载遇到工作区外路径限制时，使用支持的 `--configLoader runner`，如 `npx vitest run --configLoader runner` 和 `npx vitest run --config vitest.integration.config.ts --configLoader runner`。不要为此放宽系统权限。浏览器测试先 `npx playwright install chromium`，在可丢弃的本机实例用隐藏输入 CLI 创建 `tests/e2e/app.spec.ts` 中明确标注的虚构账号；该测试会新增虚构资料，不能针对正式账号或生产运行。`E2E_BASE_URL` 必须精确匹配测试实例的 `APP_ORIGIN`。默认本机界面测试为 `http://127.0.0.1:3308`。
+Windows 沙箱中 esbuild 配置加载遇到工作区外路径限制时，使用支持的 `--configLoader runner`，如 `npx vitest run --configLoader runner` 和 `npx vitest run --config vitest.integration.config.ts --configLoader runner`。不要为此放宽系统权限。浏览器测试先 `npx playwright install chromium`，在可丢弃的本机实例用隐藏输入 CLI 创建 `tests/e2e/app.spec.ts` 中明确标注的虚构账号；该测试会新增虚构资料，不能针对正式账号或生产运行。`E2E_BASE_URL` 必须精确匹配测试实例的 `APP_ORIGIN`。浏览器测试必须显式设置 `E2E_BASE_URL`，没有默认实例地址，避免误写正在使用的本机资料库。自动 trace 与失败截图关闭；测试只手动保存不含秘密的虚构业务页面。
 
 `npx playwright test --config playwright.recovery.config.ts` 用于已经恢复同一虚构数据库的独立实例；默认 `http://localhost:3318`，从全新浏览器解锁并核对历史及头像像素。恢复步骤、会话失效及目标必须为空的限制见 [运维文档](docs/operations.md)。这是演练入口，不会创建数据库、安装服务或触发部署。
 
@@ -76,3 +76,5 @@ docker compose run --rm --no-deps app node apps/server/dist/account-cli.js reset
 配置中已包含类型检查、lint、单元测试、真实 PostgreSQL 集成、应用构建及容器构建的 GitHub Actions。镜像发布只在人工执行工作流且检查成功后进行，输出提交标签和固定 digest；VPS 仍由人工执行拉取、备份、迁移和健康检查。
 
 工作流定义不代表它已运行。请在交付时记录实际执行的命令、通过或失败结果、未运行的容器/浏览器/恢复演练，以及对应提交与镜像 digest。真实 HTTPS、独立备份目的地、干净设备恢复、手机布局、离线冲突、重复点击和锁定行为均需要在目标环境核验。
+
+表单采用固定版本 vee-validate 4.15.1，中文行内提示与无障碍约定见 [表单验证说明](docs/form-validation.md)。

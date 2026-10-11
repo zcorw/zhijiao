@@ -1,0 +1,27 @@
+/* Shared form feedback; headless vee-validate retains the approved visual theme. */
+.validated-field { gap: 7px; min-width: 0; }
+.field-label { color: #53624d; font-size: 12px; font-weight: 500; }
+.field-hint { color: var(--muted); font-size: 11px; line-height: 1.7; }
+.validated-field input, .validated-field textarea, .validated-field select,
+.validated-field .people-select { transition: border-color .15s, background-color .15s, box-shadow .15s; }
+.validated-field [aria-invalid="true"] { border-color: #bd8577; background: #fffaf7; }
+.validated-field [aria-invalid="true"]:focus { outline-color: #d6aca0; border-color: #a6695b; }
+.field-error { display: flex; align-items: flex-start; gap: 6px; color: #96534b; font-size: 12px; line-height: 1.7; margin: 0; overflow-wrap: anywhere; }
+.field-error svg { margin-top: 3px; flex: none; }
+.form-notice { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border: 1px solid #e4d6c9; border-radius: 11px; background: #f6f0e7; color: #805b48; font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.form-notice > svg { margin-top: 2px; flex: none; }
+.gate-card > .form-notice { margin-top: 20px; }
+.validated-field.checkbox { display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: start; column-gap: 9px; }
+.validated-field.checkbox > input { grid-column: 1; grid-row: 1; margin-top: 4px; }
+.validated-field.checkbox > .field-label { grid-column: 2; grid-row: 1; font-weight: 400; line-height: 1.8; }
+.validated-field.checkbox > .field-error, .validated-field.checkbox > .field-hint { grid-column: 1 / -1; }
+.nested-form > .validated-field + .validated-field { margin-top: 12px; }
+.form-section > .validated-field + .muted { margin-top: 10px; }
+.inline-form > .validated-field { flex: 1; }
+.inline-form > .button { align-self: flex-start; margin-top: 24px; }
+@media (max-width: 650px) {
+  .validated-field input:not([type="checkbox"]):not([type="file"]),
+  .validated-field textarea, .validated-field select { font-size: 16px; }
+  .validated-field input, .validated-field select, .validated-field .people-select { min-height: 46px; }
+  .form-notice { padding: 11px 12px; }
+}

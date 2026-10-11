@@ -4,6 +4,8 @@ import type { Entity, Person, PersonTag, ReflectionInteraction, Tag } from '@zhi
 import { partialDateSchema } from '@zhijiao/shared';
 import { base, entities, directory, vaultState } from '../state';
 import { label, titleOf, localDate } from '../format';
+import ValidatedForm from './ValidatedForm.vue'; import FormField from './FormField.vue';
+import { requiredText, optionalText, partialDateRule, datetimeRule, timezoneRule, peopleRule, type FormRule } from '../validation';
 import Drawer from './Drawer.vue'; import PersonPicker from './PersonPicker.vue'; import Icon from './Icon.vue';
 type EditableKind = 'person' | 'contact' | 'fact' | 'interaction' | 'reflection' | 'followUp' | 'tag';
 interface Field { name: string; label: string; type?: 'textarea' | 'select' | 'partial' | 'datetime' | 'checkbox' | 'reference'; required?: boolean; options?: string[]; referenceKind?: Entity['kind']; placeholder?: string }
@@ -44,7 +46,25 @@ function addLink() { links.value.push({ ...base(), kind: 'reflectionLink', refle
 const tags = computed(() => entities.value.filter((entity): entity is Tag => entity.kind === 'tag'));
 const originalTags = entities.value.filter((entity): entity is PersonTag => entity.kind === 'personTag' && entity.personId === props.entity?.id);
 const selectedTags = ref(originalTags.map(edge => edge.tagId)); const tagName = ref(''); const newTags = ref<Tag[]>([]);
-function addTag() { const name = tagName.value.trim(); if (!name) return; const existing = [...tags.value, ...newTags.value].find(tag => tag.name === name); const tag = existing ?? { ...base(), kind: 'tag' as const, name }; if (!existing) newTags.value.push(tag); if (!selectedTags.value.includes(tag.id)) selectedTags.value.push(tag.id); tagName.value = ''; }
+function addTag() { const name = tagName.value.trim(); if (!name || name.length > 200) return; const existing = [...tags.value, ...newTags.value].find(tag => tag.name === name); const tag = existing ?? { ...base(), kind: 'tag' as const, name }; if (!existing) newTags.value.push(tag); if (!selectedTags.value.includes(tag.id)) selectedTags.value.push(tag.id); tagName.value = ''; }
+function options(field: Field) {
+ if (field.type === 'reference') return [{ value: '', label: '未关联' }, ...references(field).map(record => ({ value: record.id, label: titleOf(record).slice(0, 90) }))];
+ return (field.options ?? []).map(value => ({ value, label: label(value) }));
+}
+function fieldRule(field: Field): FormRule {
+ if (field.type === 'partial') return partialDateRule(field.label);
+ if (field.type === 'datetime') return datetimeRule;
+ if (field.name === 'timezone') return timezoneRule(() => !!(draft.value.occurredAt || draft.value.dueAt));
+ if (field.name === 'aliases') return value => {
+   const names = String(value ?? '').split(/[,，\n]/).map(name => name.trim()).filter(Boolean);
+   return names.length <= 100 && names.every(name => name.length <= 200) || '最多 100 个别名，每个不超过 200 个字符。';
+ };
+ if (field.name === 'color') return value => !value || /^#[0-9a-fA-F]{6}$/.test(String(value)) || '请填写六位十六进制颜色，如 #547353。';
+ if (field.type === 'select') return value => (field.options ?? []).includes(String(value)) || '请选择有效选项。';
+ if (field.type === 'reference') return value => !value || references(field).some(record => record.id === value) || '请选择仍有效且属于此人物的关联记录。';
+ const max = ['displayName','fullName','name'].includes(field.name) || props.kind === 'contact' && field.name === 'type' ? 200 : field.name === 'title' ? 300 : props.kind === 'contact' && field.name === 'value' ? 10000 : 100000;
+ return field.required ? requiredText(field.label, max) : optionalText(field.label, max);
+}
 function submit() {
  if (props.busy) return; error.value = '';
  const value: Record<string, unknown> = { ...draft.value, ...base(props.entity), kind: props.kind };
@@ -67,4 +87,33 @@ function submit() {
  emit('save', records, remove);
 }
 </script>
-<template><Drawer :title="`${entity ? '编辑' : '新建'}${label(kind)}`" subtitle="在本机加密后保存" :busy="busy" @close="emit('close')"><form id="entity-form" class="form-grid" @submit.prevent="submit"><p v-if="error || failure" class="error" role="alert">{{ error || failure }}</p><div v-if="kind === 'person' && (duplicatePeople.length || !vaultState?.directoryComplete)" class="notice" role="status"><p v-if="duplicatePeople.length">已有 {{ duplicatePeople.slice(0, 3).map(person => person.displayName).join('、') }}{{ duplicatePeople.length > 3 ? ` 等 ${duplicatePeople.length} 位人物` : '' }} 的称呼、姓名或别名与本次填写相同。可核对后继续保存，不会自动合并。</p><p v-if="!vaultState?.directoryComplete">人物目录尚未完整同步，同名提示仅检查本机已下载的人物。</p></div><div v-if="usesPeople" class="field"><span>{{ multiple ? '涉及人物' : '所属人物' }} <b class="required">*</b></span><button type="button" class="people-select" @click="picker = true"><Icon name="people" />{{ selectedNames() || '选择人物' }}<Icon name="arrow" :size="16" /></button></div><label v-for="field in fields[kind]" :key="field.name" class="field" :class="{ checkbox: field.type === 'checkbox' }"><span>{{ field.label }} <b v-if="field.required" class="required">*</b></span><textarea v-if="field.type === 'textarea'" :value="String(draft[field.name] ?? '')" rows="3" @input="draft[field.name] = ($event.target as HTMLTextAreaElement).value" :required="field.required" :placeholder="field.placeholder" /><select v-else-if="field.type === 'select'" v-model="draft[field.name]"><option v-for="option in field.options" :key="option" :value="option">{{ label(option) }}</option></select><select v-else-if="field.type === 'reference'" v-model="draft[field.name]"><option value="">未关联</option><option v-for="record in references(field)" :key="record.id" :value="record.id">{{ titleOf(record).slice(0, 90) }}</option></select><input v-else-if="field.type === 'checkbox'" v-model="draft[field.name]" type="checkbox"><input v-else v-model="draft[field.name]" :type="field.type === 'datetime' ? 'datetime-local' : 'text'" :required="field.required" :placeholder="field.placeholder || (field.type === 'partial' ? '保留已知精度，如 2026-10 或 --05-12' : '')"><small v-if="field.name === 'basis'">推测请记录在“感受与印象”，不要作为事实。</small></label><section v-if="kind === 'reflection'" class="form-section"><div class="section-title"><h3>事件依据</h3><button type="button" class="text-button" @click="addLink"><Icon name="plus" :size="16" />关联交往</button></div><p class="muted">同一感受可关联多次交往，并说明支持、反证或修正。</p><div v-for="(link, index) in links" :key="link.id" class="nested-form"><label class="field"><span>具体交往 *</span><select v-model="link.interactionId" required><option value="">选择交往</option><option v-for="event in entities.filter(record => record.kind === 'interaction')" :key="event.id" :value="event.id">{{ titleOf(event) }}</option></select></label><label class="field"><span>如何影响这条印象</span><select v-model="link.relationType"><option v-for="relation in ['arose', 'supports', 'contradicts', 'revises']" :key="relation" :value="relation">{{ label(relation) }}</option></select></label><label class="field"><span>说明</span><textarea v-model="link.explanation" rows="2" /></label><button type="button" class="text-button danger" @click="links.splice(index, 1)">移除此关联</button></div></section><section v-if="kind === 'person'" class="form-section"><h3>标签</h3><div class="tag-options"><label v-for="tag in [...tags, ...newTags]" :key="tag.id" class="chip checkbox"><input v-model="selectedTags" type="checkbox" :value="tag.id">{{ tag.name }}</label></div><div class="inline-form"><input v-model="tagName" aria-label="新标签名称" placeholder="添加标签"><button type="button" class="button secondary" @click="addTag">添加</button></div></section><p class="muted form-note">未知的信息可留空。保存后保留历史版本，可在记录详情中恢复。</p></form><template #footer><button class="button secondary" :disabled="busy" @click="emit('close')">取消</button><button class="button primary" type="submit" form="entity-form" :disabled="busy">{{ busy ? '正在加密保存…' : '保存' }}</button></template></Drawer><PersonPicker v-if="picker" :selected="selectedIds" :multiple="multiple" :initial-drafts="peopleDrafts" @confirm="choose" @cancel="picker = false" /></template>
+<template>
+<Drawer :title="(entity ? '编辑' : '新建') + label(kind)" subtitle="在本机加密后保存" :busy="busy" @close="emit('close')">
+  <ValidatedForm id="entity-form" :submit="submit" :busy="busy" :server-error="error || failure">
+    <div v-if="kind === 'person' && (duplicatePeople.length || !vaultState?.directoryComplete)" class="notice" role="status">
+      <p v-if="duplicatePeople.length">已有 {{ duplicatePeople.slice(0, 3).map(person => person.displayName).join('、') }}{{ duplicatePeople.length > 3 ? ' 等 ' + duplicatePeople.length + ' 位人物' : '' }} 的称呼、姓名或别名与本次填写相同。可核对后继续保存，不会自动合并。</p>
+      <p v-if="!vaultState?.directoryComplete">人物目录尚未完整同步，同名提示仅检查本机已下载的人物。</p>
+    </div>
+    <FormField v-if="usesPeople" name="people" :label="multiple ? '涉及人物' : '所属人物'" :model-value="selectedIds" :rules="peopleRule" type="custom" required>
+      <template #default="{ attrs, blur }"><button v-bind="attrs" type="button" class="people-select" @click="picker = true" @blur="blur"><Icon name="people" />{{ selectedNames() || '选择人物' }}<Icon name="arrow" :size="16" /></button></template>
+    </FormField>
+    <FormField v-for="field in fields[kind]" :key="field.name" v-model="draft[field.name]" :name="field.name" :label="field.label" :rules="fieldRule(field)" :required="field.required" :type="field.type === 'datetime' ? 'datetime-local' : field.type === 'partial' || !field.type ? 'text' : field.type === 'reference' ? 'select' : field.type" :options="options(field)" :placeholder="field.placeholder || (field.type === 'partial' ? '保留已知精度，如 2026-10 或 --05-12' : '')" :hint="field.name === 'basis' ? '推测请记录在“感受与印象”，不要作为事实。' : undefined" :disabled="busy" />
+    <section v-if="kind === 'reflection'" class="form-section">
+      <FormField name="evidenceCount" label="事件依据" :model-value="links.length" :rules="value => Number(value) > 0 || '请关联至少一条具体交往，作为这条感受或印象的依据。'" type="custom" required>
+        <template #default="{ attrs, blur }"><button v-bind="attrs" type="button" class="text-button" @click="addLink" @blur="blur"><Icon name="plus" :size="16" />关联交往</button></template>
+      </FormField>
+      <p class="muted">同一感受可关联多次交往，并说明支持、反证或修正。</p>
+      <div v-for="(link, index) in links" :key="link.id" class="nested-form">
+        <FormField v-model="link.interactionId" :name="'links.' + link.id + '.interaction'" label="具体交往" :rules="requiredText('具体交往')" type="select" required :options="[{ value: '', label: '选择交往' }, ...entities.filter(record => record.kind === 'interaction').map(event => ({ value: event.id, label: titleOf(event) }))]" />
+        <FormField v-model="link.relationType" :name="'links.' + link.id + '.relation'" label="如何影响这条印象" type="select" :options="['arose', 'supports', 'contradicts', 'revises'].map(value => ({ value, label: label(value) }))" />
+        <FormField v-model="link.explanation" :name="'links.' + link.id + '.explanation'" label="说明" type="textarea" :rules="optionalText('说明')" :rows="2" />
+        <button type="button" class="text-button danger" @click="links.splice(index, 1)">移除此关联</button>
+      </div>
+    </section>
+    <section v-if="kind === 'person'" class="form-section"><h3>标签</h3><div class="tag-options"><label v-for="tag in [...tags, ...newTags]" :key="tag.id" class="chip checkbox"><input v-model="selectedTags" type="checkbox" :value="tag.id">{{ tag.name }}</label></div><div class="inline-form"><FormField v-model="tagName" name="newTagName" label="新标签名称" :rules="optionalText('标签名称', 200)" placeholder="添加标签" /><button type="button" class="button secondary" @click="addTag">添加</button></div></section>
+    <p class="muted form-note">未知的信息可留空。保存后保留历史版本，可在记录详情中恢复。</p>
+  </ValidatedForm>
+  <template #footer><button class="button secondary" :disabled="busy" @click="emit('close')">取消</button><button class="button primary" type="submit" form="entity-form" :disabled="busy">{{ busy ? '正在加密保存…' : '保存' }}</button></template>
+</Drawer>
+<PersonPicker v-if="picker" :selected="selectedIds" :multiple="multiple" :initial-drafts="peopleDrafts" @confirm="choose" @cancel="picker = false" />
+</template>
