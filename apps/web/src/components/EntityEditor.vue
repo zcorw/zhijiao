@@ -5,6 +5,7 @@ import { partialDateSchema } from '@zhijiao/shared';
 import { base, entities, directory, vaultState } from '../state';
 import { label, titleOf, localDate } from '../format';
 import ValidatedForm from './ValidatedForm.vue'; import FormField from './FormField.vue';
+import PartialDateInput from './PartialDateInput.vue';
 import { requiredText, optionalText, partialDateRule, datetimeRule, timezoneRule, peopleRule, type FormRule } from '../validation';
 import Drawer from './Drawer.vue'; import PersonPicker from './PersonPicker.vue'; import Icon from './Icon.vue';
 type EditableKind = 'person' | 'contact' | 'fact' | 'interaction' | 'reflection' | 'followUp' | 'tag';
@@ -97,7 +98,12 @@ function submit() {
     <FormField v-if="usesPeople" name="people" :label="multiple ? '涉及人物' : '所属人物'" :model-value="selectedIds" :rules="peopleRule" type="custom" required>
       <template #default="{ attrs, blur }"><button v-bind="attrs" type="button" class="people-select" @click="picker = true" @blur="blur"><Icon name="people" />{{ selectedNames() || '选择人物' }}<Icon name="arrow" :size="16" /></button></template>
     </FormField>
-    <FormField v-for="field in fields[kind]" :key="field.name" v-model="draft[field.name]" :name="field.name" :label="field.label" :rules="fieldRule(field)" :required="field.required" :type="field.type === 'datetime' ? 'datetime-local' : field.type === 'partial' || !field.type ? 'text' : field.type === 'reference' ? 'select' : field.type" :options="options(field)" :placeholder="field.placeholder || (field.type === 'partial' ? '保留已知精度，如 2026-10 或 --05-12' : '')" :hint="field.name === 'basis' ? '推测请记录在“感受与印象”，不要作为事实。' : undefined" :disabled="busy" />
+    <template v-for="field in fields[kind]" :key="field.name">
+      <FormField v-if="kind === 'person' && field.name === 'metOn'" name="metOn" label="相识日期" :model-value="draft.metOn" :rules="fieldRule(field)" type="custom" hint="按已知精度记录，可留空。">
+        <template #default="{ attrs, blur }"><PartialDateInput :model-value="String(draft.metOn ?? '')" :input-attrs="attrs" :disabled="busy" @update:model-value="draft.metOn = $event" @blur="blur" /></template>
+      </FormField>
+      <FormField v-else v-model="draft[field.name]" :name="field.name" :label="field.label" :rules="fieldRule(field)" :required="field.required" :type="field.type === 'datetime' ? 'datetime-local' : field.type === 'partial' || !field.type ? 'text' : field.type === 'reference' ? 'select' : field.type" :options="options(field)" :placeholder="field.placeholder || (field.type === 'partial' ? '保留已知精度，如 2026-10 或 --05-12' : '')" :hint="field.name === 'basis' ? '推测请记录在“感受与印象”，不要作为事实。' : undefined" :disabled="busy" />
+    </template>
     <section v-if="kind === 'reflection'" class="form-section">
       <FormField name="evidenceCount" label="事件依据" :model-value="links.length" :rules="value => Number(value) > 0 || '请关联至少一条具体交往，作为这条感受或印象的依据。'" type="custom" required>
         <template #default="{ attrs, blur }"><button v-bind="attrs" type="button" class="text-button" @click="addLink" @blur="blur"><Icon name="plus" :size="16" />关联交往</button></template>
