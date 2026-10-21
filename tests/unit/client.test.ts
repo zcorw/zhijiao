@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { indexedDB } from 'fake-indexeddb';
 import { deflateSync } from 'node:zlib';
 import { createCipheriv } from 'node:crypto';
-import { aad, type CipherEnvelope, type Operation, type Person, type VaultDescriptor } from '@zhijiao/shared';
-import { ApiError, AvatarCache, IndexedDbStore, MemoryStore, VaultClient, avatarCropRect, base64, createKeyBundle, decryptAvatarAsset, decryptEnvelope, directoryId, emptyVault, encryptAvatarAsset, encryptBytes, encryptEnvelope, importAesKey, keyBundleSchema, planPersonDeletion, randomBytes, rewrapKeyBundle, unwrapKeyBundle, validateAvatarPng, type KeyBundle, type VaultTransport } from '../../packages/client/src/index.js';
+import { aad, type CipherEnvelope, type Interaction, type Operation, type Person, type VaultDescriptor } from '@zhijiao/shared';
+import { ApiError, AvatarCache, IndexedDbStore, MemoryStore, VaultClient, avatarCropRect, base64, createKeyBundle, decryptAvatarAsset, decryptEnvelope, directoryId, emptyVault, encryptAvatarAsset, encryptBytes, encryptEnvelope, importAesKey, keyBundleSchema, planPersonDeletion, randomBytes, references, rewrapKeyBundle, unwrapKeyBundle, validateAvatarPng, validateEntity, type KeyBundle, type VaultTransport } from '../../packages/client/src/index.js';
 
 const password='fictional vault phrase 123';
 const ownerId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -70,6 +70,29 @@ describe('client cryptographic boundary',()=>{
   });
 });
 describe('encrypted storage and sync',()=>{
+  it('accepts complete interactions without participants while retaining participant and task validation',()=>{
+    const entry:Interaction={id:crypto.randomUUID(),ownerId,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),kind:'interaction',title:'Fictional quiet afternoon',participantIds:[],content:'Fictional feeling recorded without a person.'};
+    expect(validateEntity(entry)).toEqual(entry);expect(references(entry)).toEqual([]);
+    const personId=crypto.randomUUID();expect(references({...entry,participantIds:[personId]})).toEqual([{id:personId,kind:'person'}]);
+    for(const participantIds of [undefined,['invalid-id'],[personId,personId],Array.from({length:1001},()=>crypto.randomUUID())])expect(()=>validateEntity({...entry,participantIds})).toThrow();
+    expect(()=>validateEntity({id:crypto.randomUUID(),ownerId,createdAt:entry.createdAt,updatedAt:entry.updatedAt,kind:'followUp',title:'Fictional task',personIds:[],type:'plan',responsibility:'me',status:'pending'})).toThrow();
+  });
+  it('persists unassociated interactions across IndexedDB reload, edit, association changes, sync, history and backup',async()=>{
+    Object.assign(globalThis,{indexedDB});const databaseName=`test-optional-participants-${crypto.randomUUID()}`,store=new IndexedDbStore(databaseName),server=new Server();
+    const initial=new VaultClient({transport:server,store,ownerId,autoSync:false});clients.push(initial);await initial.setup(password);await initial.sync();const vaultId=initial.vault!.id;
+    const now=new Date().toISOString(),entry:Interaction={id:crypto.randomUUID(),ownerId,createdAt:now,updatedAt:now,kind:'interaction',title:'Fictional train encounter',participantIds:[],occurredOn:'2026-10-12',content:'A fictional event worth keeping without creating a person.'};
+    server.offline=true;await initial.put(entry);expect(initial.entities).toEqual([entry]);expect(initial.directoryEntries).toEqual([]);expect(initial.state.pending).toBe(1);
+    const persisted=JSON.stringify(await store.read(vaultId));expect(persisted).not.toContain(entry.title);expect(persisted).not.toContain(entry.content);initial.lock();
+    const reloadedStore=new IndexedDbStore(databaseName),reloaded=new VaultClient({transport:server,store:reloadedStore,ownerId,autoSync:false});clients.push(reloaded);await reloaded.openCached(vaultId);await reloaded.unlock(password);expect(reloaded.entities).toEqual([entry]);
+    const edited={...entry,title:'Fictional train reflection',content:'A fictional revised feeling.',occurredOn:'2026-10-13',updatedAt:new Date().toISOString()};await reloaded.put(edited);expect(reloaded.state.pending).toBe(2);server.offline=false;await reloaded.resumeOnline();expect(reloaded.state.pending).toBe(0);
+    const originalCiphertext=structuredClone(server.all.find(item=>item.envelope.recordId===entry.id)!.envelope),friend=person('Fictional friend'),existing:Interaction={...entry,id:crypto.randomUUID(),title:'Fictional linked conversation',participantIds:[friend.id]};await reloaded.saveBatch([friend,existing]);await reloaded.sync();
+    const associated={...edited,participantIds:[friend.id],updatedAt:new Date().toISOString()};await reloaded.put(associated);await reloaded.sync();expect((reloaded.entities.find(entity=>entity.id===entry.id) as Interaction).participantIds).toEqual([friend.id]);
+    const detached={...associated,participantIds:[],updatedAt:new Date().toISOString()};await reloaded.put(detached);await reloaded.sync();expect(reloaded.entities.find(entity=>entity.id===entry.id)).toEqual(detached);expect(reloaded.entities.find(entity=>entity.id===existing.id)).toEqual(existing);expect(reloaded.directoryEntries.map(entity=>entity.personId)).toEqual([friend.id]);
+    expect(server.all.find(item=>item.envelope.recordId===entry.id)!.envelope).toEqual(originalCiphertext);const history=await reloaded.history(entry.id);expect(history.map(version=>version.revision)).toEqual(['1','2','3','4']);expect(history.every(version=>!version.tombstone)).toBe(true);expect(history.map(version=>(version.entity as Interaction).participantIds)).toEqual([[],[],[friend.id],[]]);expect(history[0]!.entity).toEqual(entry);
+    const {engine:other}=await device(server);expect(other.entities.find(entity=>entity.id===entry.id)).toEqual(detached);expect(other.entities.find(entity=>entity.id===existing.id)).toEqual(existing);
+    await other.restore(entry.id,'3');await other.sync();expect((other.entities.find(entity=>entity.id===entry.id) as Interaction).participantIds).toEqual([friend.id]);await other.restore(entry.id,'4');await other.sync();expect((other.entities.find(entity=>entity.id===entry.id) as Interaction).participantIds).toEqual([]);expect((await other.history(entry.id)).map(version=>version.revision)).toEqual(['1','2','3','4','5','6']);
+    const backup=await other.exportBackup();expect(backup).not.toContain(detached.content);const restored=new VaultClient({transport:server,store:new MemoryStore(),ownerId,autoSync:false});clients.push(restored);const preview=await restored.previewBackup(backup,password);expect(preview.people).toBe(1);await restored.importBackup(preview,{confirm:true});await restored.unlock(password);expect((restored.entities.find(entity=>entity.id===entry.id) as Interaction).participantIds).toEqual([]);expect(restored.entities.find(entity=>entity.id===existing.id)).toEqual(existing);
+  });
   it('saves ciphertext and outbox atomically, derives directory and supports aliases/pinyin/initials',async()=>{
     const {engine,store,server}=await client();const entry=person();await engine.put(entry);const stored=await store.read(engine.vault!.id);expect(stored!.outbox).toHaveLength(1);expect(stored!.outbox[0]!.operation.mutations).toHaveLength(2);expect(JSON.stringify(stored)).not.toContain(entry.displayName);
     expect(engine.searchPeople('linchu').entries[0]!.personId).toBe(entry.id);expect(engine.searchPeople('lc').entries[0]!.personId).toBe(entry.id);expect(engine.searchPeople('小林').entries[0]!.personId).toBe(entry.id);

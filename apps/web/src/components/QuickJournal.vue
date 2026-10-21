@@ -2,15 +2,17 @@
 import { ref, computed } from 'vue';
 import type { Person, Interaction, Entity, PersonReflection, FollowUp } from '@zhijiao/shared';
 import { partialDateSchema } from '@zhijiao/shared';
-import { base, directory, entities } from '../state'; import { label, localDate } from '../format';
+import { base, directory, entities } from '../state'; import { label, localDate, interactionTitle } from '../format';
 import ValidatedForm from './ValidatedForm.vue'; import FormField from './FormField.vue';
-import { requiredText, optionalText, partialDateRule, datetimeRule, timezoneRule, peopleRule, type FormRule } from '../validation';
+import DateTimeInput from './DateTimeInput.vue';
+import { requiredText, optionalText, interactionContentRule, partialDateRule, datetimeRule, timezoneRule, peopleRule, type FormRule } from '../validation';
 import Drawer from './Drawer.vue'; import PersonPicker from './PersonPicker.vue'; import Icon from './Icon.vue';
 const props = defineProps<{ personId?: string; busy?: boolean; failure?: string }>(); const emit = defineEmits<{ save: [records: Entity[], remove: string[]]; close: [] }>();
 const selected = ref<string[]>(props.personId ? [props.personId] : []); const drafts = ref<Person[]>([]); const picker = ref(false); const error = ref('');
 const title = ref(''); const content = ref(''); const date = ref(localDate()); const exactTime = ref(''); const timezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone); const channel = ref(''); const location = ref(''); const eventKind = ref('');
 interface ReflectionDraft { id: string; personId: string; mode: 'new' | 'existing'; existingId: string; type: PersonReflection['type']; content: string; relation: 'arose' | 'supports' | 'contradicts' | 'revises'; explanation: string }
 const reflections = ref<ReflectionDraft[]>([]); const taskOpen = ref(false); const taskTitle = ref(''); const taskType = ref<FollowUp['type']>('promise'); const responsibility = ref<FollowUp['responsibility']>('me'); const dueDate = ref(''); const details = ref('');
+const needsPeople = computed(() => taskOpen.value || reflections.value.length > 0);
 const names = computed(() => selected.value.map(id => ({ id, name: directory.value.find(person => person.personId === id)?.displayName ?? drafts.value.find(person => person.id === id)?.displayName ?? '尚未同步人物' })));
 const availableReflections = computed(() => entities.value.filter((entity): entity is PersonReflection => entity.kind === 'reflection' && selected.value.includes(entity.personId)));
 function addReflection() { reflections.value.push({ id: crypto.randomUUID(), personId: selected.value.length === 1 ? selected.value[0] : '', mode: 'new', existingId: '', type: 'feeling', content: '', relation: 'arose', explanation: '' }); }
@@ -20,10 +22,11 @@ function existingReflectionRule(item: ReflectionDraft): FormRule { return value 
 function submit() {
  if (props.busy) return; error.value = '';
  date.value = date.value.trim(); dueDate.value = dueDate.value.trim(); timezone.value = timezone.value.trim();
- if (!selected.value.length || !title.value.trim()) { error.value = '请选择参与人物并填写交往标题。'; return; }
+ if (!title.value.trim() && !content.value.trim()) { error.value = '请写下事件或感受，也可以只填写交往标题。'; return; }
+ if (needsPeople.value && !selected.value.length) { error.value = '针对人物的感受或事项需要关联人物，也可移除附加条目后只保存事件或感受。'; return; }
  if (date.value && !partialDateSchema.safeParse(date.value).success || taskOpen.value && dueDate.value && !partialDateSchema.safeParse(dueDate.value).success) { error.value = '日期格式不正确，请保留已知精度。'; return; }
  if (exactTime.value) { try { new Intl.DateTimeFormat('zh-CN', { timeZone: timezone.value }); if (!Number.isFinite(new Date(exactTime.value).getTime())) throw Error(); } catch { error.value = '请填写合法的精确时间和 IANA 时区。'; return; } }
- const event: Interaction = { ...base(), kind: 'interaction', title: title.value.trim(), participantIds: [...selected.value], content: content.value.trim(), ...(date.value ? { occurredOn: date.value } : {}), ...(exactTime.value ? { occurredAt: new Date(exactTime.value).toISOString(), timezone: timezone.value } : {}), ...(channel.value.trim() ? { channel: channel.value.trim() } : {}), ...(location.value.trim() ? { location: location.value.trim() } : {}), ...(eventKind.value.trim() ? { kindOfInteraction: eventKind.value.trim() } : {}) };
+ const event: Interaction = { ...base(), kind: 'interaction', title: interactionTitle(title.value, content.value), participantIds: [...selected.value], content: content.value.trim(), ...(date.value ? { occurredOn: date.value } : {}), ...(exactTime.value ? { occurredAt: new Date(exactTime.value).toISOString(), timezone: timezone.value } : {}), ...(channel.value.trim() ? { channel: channel.value.trim() } : {}), ...(location.value.trim() ? { location: location.value.trim() } : {}), ...(eventKind.value.trim() ? { kindOfInteraction: eventKind.value.trim() } : {}) };
  const records: Entity[] = [...drafts.value.filter(person => selected.value.includes(person.id)), event];
  for (const item of reflections.value) {
    if (!selected.value.includes(item.personId)) { error.value = '每条感受都需要明确针对一名参与人物。'; return; }
@@ -40,21 +43,21 @@ function submit() {
 <template>
 <Drawer title="记一笔" subtitle="记住这次相处" :busy="busy" @close="emit('close')">
   <ValidatedForm id="journal-form" :submit="submit" :busy="busy" :server-error="error || failure">
-    <FormField name="people" label="和谁在一起" :model-value="selected" :rules="peopleRule" type="custom" required>
-      <template #default="{ attrs, blur }"><button v-bind="attrs" type="button" class="people-select" @click="picker = true" @blur="blur"><Icon name="people" />{{ names.map(person => person.name).join('、') || '选择一位或多位人物' }}<Icon name="arrow" :size="16" /></button></template>
+    <FormField name="people" label="关联人物" :model-value="selected" :rules="needsPeople ? peopleRule : undefined" type="custom" :required="needsPeople" :hint="needsPeople ? '针对人物的感受或事项需要关联人物；可移除附加条目后只保存事件或感受。' : '可不选，事件或感受会直接保存为完整交往记录，以后也可补关联。'">
+      <template #default="{ attrs, blur }"><button v-bind="attrs" type="button" class="people-select" @click="picker = true" @blur="blur"><Icon name="people" />{{ names.map(person => person.name).join('、') || '选择人物（可不选）' }}<Icon name="arrow" :size="16" /></button></template>
     </FormField>
-    <FormField v-model="title" name="title" label="这次交往" :rules="requiredText('交往标题', 300)" required placeholder="给这次交往一个简短标题" :disabled="busy" />
-    <FormField v-model="content" name="content" label="发生了什么" :rules="optionalText('交往内容')" type="textarea" :rows="5" placeholder="聊到的事、相处的细节…" :disabled="busy" />
-    <FormField v-model="date" name="date" label="日期" :rules="partialDateRule('日期')" placeholder="YYYY-MM-DD，可保留已知精度" :disabled="busy" />
+    <FormField v-model="title" name="title" label="这次交往" :rules="optionalText('交往标题', 300)" hint="可留空，将使用事件或感受的首行作为标题。" placeholder="给这条记录一个简短标题（可不填）" :disabled="busy" />
+    <FormField v-model="content" name="content" label="事件或感受" :rules="interactionContentRule(title)" :required="!title.trim()" type="textarea" :rows="5" placeholder="发生的事、相处的细节，或此刻想记下的感受…" :disabled="busy" />
+      <FormField :model-value="date" name="date" label="日期" :rules="partialDateRule('日期')" type="custom" hint="按已知精度记录，可留空。"><template #default="{ attrs, blur }"><DateTimeInput v-model="date" :input-attrs="attrs" label="日期" :disabled="busy" @blur="blur" /></template></FormField>
     <details class="form-details"><summary>时间、渠道和地点</summary><div class="form-grid">
-      <FormField v-model="exactTime" name="exactTime" label="精确时间（可不填）" :rules="datetimeRule" type="datetime-local" :disabled="busy" />
+      <FormField :model-value="exactTime" name="exactTime" label="精确时间（可不填）" :rules="datetimeRule" type="custom"><template #default="{ attrs, blur }"><DateTimeInput v-model="exactTime" :input-attrs="attrs" label="精确时间（可不填）" mode="datetime" :disabled="busy" @blur="blur" /></template></FormField>
       <FormField v-if="exactTime" v-model="timezone" name="timezone" label="时区" :rules="timezoneRule(() => !!exactTime)" required :disabled="busy" />
       <FormField v-model="eventKind" name="eventKind" label="交往类型" :rules="optionalText('交往类型')" placeholder="见面、消息、通话…" :disabled="busy" />
       <FormField v-model="channel" name="channel" label="渠道" :rules="optionalText('渠道')" :disabled="busy" />
       <FormField v-model="location" name="location" label="地点" :rules="optionalText('地点')" :disabled="busy" />
     </div></details>
     <section class="form-section"><div class="section-title"><h3>我的感受与印象</h3><button type="button" class="text-button" :disabled="busy" @click="addReflection"><Icon name="plus" :size="16" />添加</button></div>
-      <p v-if="!reflections.length" class="muted">可选。记录当时的感受，或让这次交往支持、反驳已有印象。</p>
+      <p v-if="!reflections.length" class="muted">可选，针对具体人物。只记当时的感受，可直接写在上方“事件或感受”中。</p>
       <div v-for="(item, index) in reflections" :key="item.id" class="nested-form">
         <FormField v-model="item.personId" :name="'reflections.' + item.id + '.person'" label="针对谁" :rules="reflectionPersonRule()" type="select" required :options="[{ value: '', label: '请选择具体人物' }, ...names.map(person => ({ value: person.id, label: person.name }))]" />
         <div class="segmented"><button type="button" :class="{ active: item.mode === 'new' }" @click="item.mode = 'new'">新感受</button><button type="button" :class="{ active: item.mode === 'existing' }" @click="item.mode = 'existing'">已有印象</button></div>
@@ -72,12 +75,12 @@ function submit() {
       <FormField v-model="taskTitle" name="taskTitle" label="事项标题" :rules="requiredText('事项标题', 300)" required placeholder="接下来需要做什么" />
       <FormField v-model="taskType" name="taskType" label="类型" type="select" :options="[{ value: 'promise', label: '约定' }, { value: 'plan', label: '个人计划' }]" />
       <FormField v-model="responsibility" name="responsibility" label="由谁负责" type="select" :options="[{ value: 'me', label: '我' }, { value: 'other', label: '对方' }, { value: 'joint', label: '共同' }]" />
-      <FormField v-model="dueDate" name="dueDate" label="期限日期（可不填）" :rules="partialDateRule('期限日期')" placeholder="YYYY-MM-DD" />
+      <FormField :model-value="dueDate" name="dueDate" label="期限日期（可不填）" :rules="partialDateRule('期限日期')" type="custom"><template #default="{ attrs, blur }"><DateTimeInput v-model="dueDate" :input-attrs="attrs" label="期限日期（可不填）" :disabled="busy" @blur="blur" /></template></FormField>
       <FormField v-model="details" name="details" label="细节" :rules="optionalText('事项细节')" type="textarea" :rows="2" />
     </div></section>
     <p class="muted form-note">这次交往、感受与事项会一次保存，事件依据自动关联。</p>
   </ValidatedForm>
   <template #footer><button class="button secondary" :disabled="busy" @click="emit('close')">取消</button><button class="button primary" type="submit" form="journal-form" :disabled="busy">{{ busy ? '正在加密保存…' : '保存这一笔' }}</button></template>
 </Drawer>
-<PersonPicker v-if="picker" multiple :selected="selected" :initial-drafts="drafts" @confirm="choose" @cancel="picker = false" />
+<PersonPicker v-if="picker" multiple allow-empty :selected="selected" :initial-drafts="drafts" @confirm="choose" @cancel="picker = false" />
 </template>

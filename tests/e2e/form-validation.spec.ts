@@ -91,8 +91,9 @@ test('records: whitespace/date checks, corrected values, unmounted optional fiel
   await page.getByRole('button', { name: '记一笔', exact: true }).first().click();
   const journal = page.getByRole('dialog', { name: '记一笔' });
   await journal.getByRole('button', { name: '保存这一笔', exact: true }).click();
-  await expect(journal.locator('[name="people"]')).toBeFocused();
-  await expect(journal.getByText('请选择至少一位人物。', { exact: true })).toBeVisible();
+  await expect(journal.locator('[name="content"]')).toBeFocused();
+  await expect(journal.getByText('请写下事件或感受，也可以只填写交往标题。', { exact: true })).toBeVisible();
+  await expect(journal.locator('[name="people"]')).not.toHaveAttribute('aria-required', 'true');
   await journal.locator('[name="people"]').click();
   const picker = page.getByRole('dialog', { name: '选择人物' });
   await picker.getByRole('textbox', { name: '搜索人物' }).fill(name);
@@ -121,6 +122,7 @@ test('records: whitespace/date checks, corrected values, unmounted optional fiel
   await expect(journal.locator('.field-error')).toHaveCount(0);
   await journal.getByRole('button', { name: '保存这一笔', exact: true }).click();
   await expect(journal).not.toBeVisible();
+  await page.getByRole('button', { name: '交往', exact: true }).first().click();
   await expect(page.getByText(eventTitle, { exact: true })).toHaveCount(1);
   await page.getByRole('button', { name: '记一笔', exact: true }).first().click();
   await journal.getByRole('button', { name: '保存这一笔', exact: true }).click();
@@ -152,7 +154,7 @@ test('mobile: dynamic reflection errors, safe credential forms, backup requireme
   await expect(journal.locator('[name$=".content"]')).toHaveCount(0);
   await expect(journal.locator('[name$=".existing"]')).toBeVisible();
   await journal.getByRole('button', { name: '移除此条感受' }).click();
-  await expect(journal.locator('.field-error')).toHaveCount(2);
+  await expect(journal.locator('.field-error')).toHaveCount(1);
   await journal.getByRole('button', { name: '取消', exact: true }).click();
   await page.getByRole('button', { name: '设置', exact: true }).first().click();
   const rewrap = page.locator('#rewrap-form');

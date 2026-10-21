@@ -1,5 +1,6 @@
 import { partialDateSchema } from '@zhijiao/shared';
 import type { GenericValidateFunction } from 'vee-validate';
+import { toDateTimePicker } from './datetime-picker';
 
 export type FormRule = GenericValidateFunction<unknown>;
 const text = (value: unknown) => typeof value === 'string' ? value : '';
@@ -7,6 +8,9 @@ export const requiredText = (label: string, max = 100_000): FormRule => value =>
   !text(value).trim() ? `请填写${label}。` : text(value).length > max ? `${label}最多 ${max} 个字符。` : true;
 export const optionalText = (label: string, max = 100_000): FormRule => value =>
   text(value).length > max ? `${label}最多 ${max} 个字符。` : true;
+export const interactionContentRule = (title: string): FormRule => value =>
+  text(value).length > 100_000 ? '事件或感受最多 100000 个字符。'
+    : !!(title.trim() || text(value).trim()) || '请写下事件或感受，也可以只填写交往标题。';
 export const loginRule: FormRule = value => {
   const login = text(value).trim().toLowerCase();
   if (!login) return '请填写登录名。';
@@ -26,7 +30,7 @@ export const matches = (getOriginal: () => string): FormRule => value => !text(v
 export const partialDateRule = (label: string): FormRule => value => !text(value).trim()
   || partialDateSchema.safeParse(text(value).trim()).success
   || `${label}不合法。可填 YYYY、YYYY-MM、YYYY-MM-DD 或 --MM-DD。`;
-export const datetimeRule: FormRule = value => !text(value) || Number.isFinite(new Date(text(value)).getTime()) || '请填写合法的日期和时间。';
+export const datetimeRule: FormRule = value => !text(value).trim() || toDateTimePicker(text(value).trim()) !== null || '请填写合法的日期和时间（YYYY-MM-DDTHH:mm，24 小时制）。';
 export const timezoneRule = (required: () => boolean): FormRule => value => {
   if (!text(value).trim()) return !required() || '填写精确时间时，请同时填写时区。';
   try { new Intl.DateTimeFormat('zh-CN', { timeZone: text(value).trim() }); return true; }

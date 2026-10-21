@@ -60,16 +60,18 @@ test('desktop: real encrypted CRUD, repeated save, search and lock', async({page
   await picker.getByRole('button').filter({hasText:name}).first().click();
   await picker.getByRole('button',{name:'确认（1）'}).click();
   const event=`虚构散步${suffix}`;
-  await journal.getByLabel('这次交往 *').fill(event);
-  await journal.getByLabel('发生了什么').fill('虚构测试资料，无真实人物信息。');
+  await journal.locator('[name="title"]').fill(event);
+  await journal.locator('[name="content"]').fill('虚构测试资料，无真实人物信息。');
   await journal.getByRole('button',{name:'保存这一笔',exact:true}).dblclick();
   await expect(journal).not.toBeVisible();
+  await page.getByRole('button',{name:'交往',exact:true}).first().click();
   await expect(page.getByText(event,{exact:true})).toHaveCount(1);
   const stored=await page.evaluate(async()=>{
     const db=await new Promise<IDBDatabase>((resolve,reject)=>{const request=indexedDB.open('zhijiao-encrypted-v1');request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
     const rows=await new Promise<unknown[]>((resolve,reject)=>{const request=db.transaction('vaults','readonly').objectStore('vaults').getAll();request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});db.close();return JSON.stringify(rows);
   });
   expect(stored).not.toContain(name);expect(stored).not.toContain(event);expect(stored).not.toContain(unlockPhrase);
+  await page.getByRole('button',{name:'首页',exact:true}).first().click();
   await mkdir('.local/screenshots',{recursive:true});
   await page.screenshot({path:'.local/screenshots/desktop-home.png',fullPage:true});
   await page.getByRole('button',{name:'人物',exact:true}).first().click();

@@ -2,9 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { validate } from 'vee-validate';
 import { partialDateSchema } from '@zhijiao/shared';
 import { passwordSchema } from '@tts-workbench/account-core';
-import { confirmationRule, loginPasswordRule, loginRule, matches, partialDateRule, peopleRule, requiredText, secretRule, timezoneRule } from '../../apps/web/src/validation.js';
+import { confirmationRule, interactionContentRule, loginPasswordRule, loginRule, matches, partialDateRule, peopleRule, requiredText, secretRule, timezoneRule } from '../../apps/web/src/validation.js';
 
 describe('Chinese form validation and shared schema agreement', () => {
+  it('accepts an event or feeling without forcing a second text field', async () => {
+    expect((await validate('  只想记下今天的感受  ', interactionContentRule(''))).valid).toBe(true);
+    expect((await validate('', interactionContentRule('一次值得记住的相遇'))).valid).toBe(true);
+    expect((await validate(' \n ', interactionContentRule('   '))).valid).toBe(false);
+    expect((await validate('x'.repeat(100_001), interactionContentRule('标题'))).valid).toBe(false);
+  });
   it('rejects empty and whitespace business values without consuming a valid name', async () => {
     for (const value of ['', ' ', '\t\n']) expect((await validate(value, requiredText('常用称呼', 200))).errors).toEqual(['请填写常用称呼。']);
     expect((await validate(' 小舟 ', requiredText('常用称呼', 200))).valid).toBe(true);

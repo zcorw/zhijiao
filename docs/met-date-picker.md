@@ -6,7 +6,7 @@
 
 固定 `@vuepic/vue-datepicker` **14.0.0** 和中文 locale 依赖 `date-fns` **4.4.0**；组件要求 Vue >=3.5，与当前 3.5.43 兼容。依据：[官方安装](https://vue3datepicker.com/installation/)、[日/月/年模式](https://vue3datepicker.com/props/modes/)、[模型类型](https://vue3datepicker.com/props/general-configuration/)、[本地化](https://vue3datepicker.com/props/localization/)、[主题](https://vue3datepicker.com/customization/theming/)。
 
-`PartialDateInput.vue` 提供一个输入框、日历按钮和可清空按钮。弹层内使用组件的 inline 日、月、年模式与中文精度按钮；颜色局部覆盖为奶油/鼠尾草绿，采用 v14 的 `dp--` 类名。年份网格围绕已知年份前后75年，键盘直接输入可以使用所有符合已有 schema 的0001..9999年份，重新打开后网格围绕该年定位。
+原 `PartialDateInput.vue` 现已统一为 `DateTimeInput.vue`，提供一个输入框、日历按钮和可清空按钮。弹层内使用组件的 inline 日、月、年模式与中文精度按钮；颜色局部覆盖为奶油/鼠尾草绿，采用 v14 的 `dp--` 类名。年份网格围绕已知年份前后75年，键盘直接输入可以使用所有符合已有 schema 的0001..9999年份，重新打开后网格围绕该年定位。后续全部日期入口的扩展及当前验收状态见 [all-date-inputs.md](all-date-inputs.md)。
 
 弹层草稿仅在“确定日期”时更新人物编辑草稿；取消、Escape、外部点击不会改变原值。减少精度只保留已知部分；增加精度不选择缺失月份或日期，必须主动选择后才能确认。日历按年/月定位时使用的视图日期不会写回记录。弹层内按钮为 `type=button`，Enter 不会意外提交人物表单。
 

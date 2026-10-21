@@ -3,16 +3,17 @@ import { ref, computed } from 'vue';
 import type { Entity, Person, PersonTag, ReflectionInteraction, Tag } from '@zhijiao/shared';
 import { partialDateSchema } from '@zhijiao/shared';
 import { base, entities, directory, vaultState } from '../state';
-import { label, titleOf, localDate } from '../format';
+import { label, titleOf, localDate, interactionTitle } from '../format';
 import ValidatedForm from './ValidatedForm.vue'; import FormField from './FormField.vue';
-import PartialDateInput from './PartialDateInput.vue';
-import { requiredText, optionalText, partialDateRule, datetimeRule, timezoneRule, peopleRule, type FormRule } from '../validation';
+import DateTimeInput from './DateTimeInput.vue';
+import { editDateTime } from '../datetime-picker';
+import { requiredText, optionalText, interactionContentRule, partialDateRule, datetimeRule, timezoneRule, peopleRule, type FormRule } from '../validation';
 import Drawer from './Drawer.vue'; import PersonPicker from './PersonPicker.vue'; import Icon from './Icon.vue';
 type EditableKind = 'person' | 'contact' | 'fact' | 'interaction' | 'reflection' | 'followUp' | 'tag';
 interface Field { name: string; label: string; type?: 'textarea' | 'select' | 'partial' | 'datetime' | 'checkbox' | 'reference'; required?: boolean; options?: string[]; referenceKind?: Entity['kind']; placeholder?: string }
 const props = defineProps<{ kind: EditableKind; entity?: Entity; personId?: string; busy?: boolean; failure?: string }>();
 const emit = defineEmits<{ save: [records: Entity[], remove: string[]]; close: [] }>();
-const defaultValues: Record<EditableKind, Record<string, unknown>> = { person: { status: 'active', aliases: '' }, contact: { type: '电话', status: 'active' }, fact: { basis: 'self-reported', status: 'current' }, interaction: { participantIds: props.personId ? [props.personId] : [] }, reflection: { type: 'feeling', status: 'current', recordedOn: localDate() }, followUp: { type: 'plan', responsibility: 'me', status: 'pending', personIds: props.personId ? [props.personId] : [] }, tag: {} };
+const defaultValues: Record<EditableKind, Record<string, unknown>> = { person: { status: 'active', aliases: '' }, contact: { type: '电话', status: 'active' }, fact: { basis: 'self-reported', status: 'current' }, interaction: { participantIds: props.personId ? [props.personId] : [], content: '' }, reflection: { type: 'feeling', status: 'current', recordedOn: localDate() }, followUp: { type: 'plan', responsibility: 'me', status: 'pending', personIds: props.personId ? [props.personId] : [] }, tag: {} };
 const draft = ref<Record<string, unknown>>({ ...defaultValues[props.kind], ...props.entity, ...(['contact', 'fact', 'reflection'].includes(props.kind) && props.personId ? { personId: props.personId } : {}) });
 if (Array.isArray(draft.value.aliases)) draft.value.aliases = (draft.value.aliases as string[]).join('，');
 const duplicatePeople = computed(() => {
@@ -23,20 +24,20 @@ const duplicatePeople = computed(() => {
  const downloadedPeople = new Map(entities.value.filter((entity): entity is Person => entity.kind === 'person').map(person => [person.id, person]));
  return directory.value.filter(person => person.personId !== props.entity?.id && [person.displayName, ...person.aliases, downloadedPeople.get(person.personId)?.fullName ?? ''].some(name => enteredNames.has(normalizeName(name))));
 });
-for (const name of ['occurredAt', 'dueAt']) if (typeof draft.value[name] === 'string') { const date = new Date(draft.value[name] as string); draft.value[name] = new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16); }
+for (const name of ['occurredAt', 'dueAt']) if (typeof draft.value[name] === 'string') draft.value[name] = editDateTime(draft.value[name] as string);
 const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 if (props.kind === 'interaction' || props.kind === 'followUp') draft.value.timezone ??= timezone;
 const fields: Record<EditableKind, Field[]> = {
  person: [{ name: 'displayName', label: '常用称呼', required: true, placeholder: '你平时怎么称呼对方' }, { name: 'summary', label: '一句话辨识', placeholder: '相识背景或共同话题' }, { name: 'fullName', label: '正式姓名' }, { name: 'aliases', label: '昵称 / 别名', placeholder: '用逗号分开' }, { name: 'metContext', label: '相识背景', type: 'textarea' }, { name: 'metOn', label: '相识日期', type: 'partial' }, { name: 'birthday', label: '生日', type: 'partial', placeholder: '--05-12（仅知月日）' }, { name: 'notes', label: '备注', type: 'textarea' }, { name: 'status', label: '来往状态', type: 'select', options: ['active', 'archived'] }],
  contact: [{ name: 'type', label: '方式', required: true }, { name: 'value', label: '号码 / 地址 / 账号', required: true }, { name: 'label', label: '用途说明' }, { name: 'preferred', label: '优先使用', type: 'checkbox' }, { name: 'status', label: '状态', type: 'select', options: ['active', 'inactive', 'unconfirmed'] }],
  fact: [{ name: 'content', label: '事实或偏好', type: 'textarea', required: true }, { name: 'category', label: '类别', placeholder: '如饮食、兴趣、近况' }, { name: 'basis', label: '来源性质', type: 'select', options: ['self-reported', 'observation', 'third-party'], required: true }, { name: 'sourceNote', label: '来源说明', type: 'textarea' }, { name: 'sourceInteractionId', label: '获知的交往', type: 'reference', referenceKind: 'interaction' }, { name: 'learnedOn', label: '获知日期', type: 'partial' }, { name: 'validFrom', label: '有效期起', type: 'partial' }, { name: 'validTo', label: '有效期止', type: 'partial' }, { name: 'status', label: '状态', type: 'select', options: ['current', 'unconfirmed', 'outdated'] }, { name: 'supersedesFactId', label: '替代的旧事实', type: 'reference', referenceKind: 'fact' }],
- interaction: [{ name: 'title', label: '交往标题', required: true, placeholder: '一次见面、聊天或共同活动' }, { name: 'content', label: '发生了什么', type: 'textarea' }, { name: 'kindOfInteraction', label: '交往类型', placeholder: '见面 / 消息 / 通话' }, { name: 'occurredOn', label: '发生日期', type: 'partial' }, { name: 'occurredAt', label: '精确时间（知道时才填）', type: 'datetime' }, { name: 'timezone', label: '时间所属时区' }, { name: 'channel', label: '沟通渠道' }, { name: 'location', label: '地点' }],
+ interaction: [{ name: 'title', label: '交往标题', placeholder: '一个简短标题（可不填）' }, { name: 'content', label: '事件或感受', type: 'textarea', placeholder: '发生的事，或此刻想记下的感受' }, { name: 'kindOfInteraction', label: '交往类型', placeholder: '见面 / 消息 / 通话' }, { name: 'occurredOn', label: '发生日期', type: 'partial' }, { name: 'occurredAt', label: '精确时间（知道时才填）', type: 'datetime' }, { name: 'timezone', label: '时间所属时区' }, { name: 'channel', label: '沟通渠道' }, { name: 'location', label: '地点' }],
  reflection: [{ name: 'type', label: '类型', type: 'select', options: ['feeling', 'hypothesis', 'experience'] }, { name: 'content', label: '我的感受或想法', type: 'textarea', required: true }, { name: 'context', label: '语境与限制', type: 'textarea' }, { name: 'evidence', label: '支持理由', type: 'textarea' }, { name: 'counterEvidence', label: '反例 / 其他解释', type: 'textarea' }, { name: 'certainty', label: '主观把握', placeholder: '如：暂时印象，仍待观察' }, { name: 'recordedOn', label: '记录日期', type: 'partial' }, { name: 'status', label: '状态', type: 'select', options: ['current', 'revised', 'withdrawn'] }, { name: 'supersedesId', label: '修正的旧印象', type: 'reference', referenceKind: 'reflection' }],
  followUp: [{ name: 'title', label: '事项标题', required: true }, { name: 'type', label: '事项类型', type: 'select', options: ['promise', 'plan'] }, { name: 'responsibility', label: '由谁负责', type: 'select', options: ['me', 'other', 'joint'], required: true }, { name: 'details', label: '约定与完成标准', type: 'textarea' }, { name: 'sourceInteractionId', label: '来源交往', type: 'reference', referenceKind: 'interaction' }, { name: 'dueDate', label: '期限日期', type: 'partial' }, { name: 'dueAt', label: '精确截止时间', type: 'datetime' }, { name: 'timezone', label: '时间所属时区' }, { name: 'status', label: '状态', type: 'select', options: ['pending', 'completed', 'cancelled'] }], tag: [{ name: 'name', label: '标签名称', required: true }, { name: 'color', label: '颜色（可不填）', placeholder: '#547353' }]
 };
 const error = ref(''); const picker = ref(false); const peopleDrafts = ref<Person[]>([]);
 const selectionField = props.kind === 'interaction' ? 'participantIds' : props.kind === 'followUp' ? 'personIds' : 'personId';
-const usesPeople = props.kind !== 'person' && props.kind !== 'tag'; const multiple = props.kind === 'interaction' || props.kind === 'followUp';
+const usesPeople = props.kind !== 'person' && props.kind !== 'tag'; const multiple = props.kind === 'interaction' || props.kind === 'followUp'; const needsPeople = usesPeople && props.kind !== 'interaction';
 const selectedIds = computed(() => multiple ? (draft.value[selectionField] as string[] ?? []) : draft.value.personId ? [draft.value.personId as string] : []);
 function selectedNames() { return selectedIds.value.map(id => directory.value.find(person => person.personId === id)?.displayName ?? peopleDrafts.value.find(person => person.id === id)?.displayName ?? '尚未同步人物').join('、'); }
 function choose(ids: string[], newPeople: Person[]) { draft.value[selectionField] = multiple ? ids : ids[0]; peopleDrafts.value = newPeople; picker.value = false; }
@@ -53,6 +54,7 @@ function options(field: Field) {
  return (field.options ?? []).map(value => ({ value, label: label(value) }));
 }
 function fieldRule(field: Field): FormRule {
+ if (props.kind === 'interaction' && field.name === 'content') return interactionContentRule(String(draft.value.title ?? ''));
  if (field.type === 'partial') return partialDateRule(field.label);
  if (field.type === 'datetime') return datetimeRule;
  if (field.name === 'timezone') return timezoneRule(() => !!(draft.value.occurredAt || draft.value.dueAt));
@@ -74,9 +76,14 @@ function submit() {
    if (field.required && !value[field.name]) { error.value = `请填写${field.label}。`; return; }
    if (field.type === 'partial' && value[field.name] && !partialDateSchema.safeParse(value[field.name]).success) { error.value = `${field.label}格式不正确。可填写 YYYY、YYYY-MM、YYYY-MM-DD 或 --MM-DD。`; return; }
    if (field.type === 'datetime' && value[field.name]) { const date = new Date(value[field.name] as string); if (!Number.isFinite(date.getTime())) { error.value = '精确时间不合法。'; return; } value[field.name] = date.toISOString(); }
-   if (value[field.name] === '') delete value[field.name];
+   // Interaction content is a required string in the encrypted schema; an empty body is valid.
+   if (value[field.name] === '' && !(props.kind === 'interaction' && field.name === 'content')) delete value[field.name];
  }
- if (usesPeople && !selectedIds.value.length) { error.value = '请选择至少一名人物。'; return; }
+ if (needsPeople && !selectedIds.value.length) { error.value = '请选择至少一名人物。'; return; }
+ if (props.kind === 'interaction') {
+   value.title = interactionTitle(String(value.title ?? ''), String(value.content ?? ''));
+   if (!value.title) { error.value = '请写下事件或感受，也可以只填写交往标题。'; return; }
+ }
  if ((value.occurredAt || value.dueAt) && !value.timezone) { error.value = '精确时间需要填写 IANA 时区。'; return; }
  if (value.timezone) { try { new Intl.DateTimeFormat('zh-CN', { timeZone: value.timezone as string }); } catch { error.value = '时区格式不合法，如 Asia/Shanghai。'; return; } }
  if (props.kind === 'person') value.aliases = String(draft.value.aliases ?? '').split(/[,，\n]/).map(alias => alias.trim()).filter(Boolean);
@@ -95,14 +102,14 @@ function submit() {
       <p v-if="duplicatePeople.length">已有 {{ duplicatePeople.slice(0, 3).map(person => person.displayName).join('、') }}{{ duplicatePeople.length > 3 ? ' 等 ' + duplicatePeople.length + ' 位人物' : '' }} 的称呼、姓名或别名与本次填写相同。可核对后继续保存，不会自动合并。</p>
       <p v-if="!vaultState?.directoryComplete">人物目录尚未完整同步，同名提示仅检查本机已下载的人物。</p>
     </div>
-    <FormField v-if="usesPeople" name="people" :label="multiple ? '涉及人物' : '所属人物'" :model-value="selectedIds" :rules="peopleRule" type="custom" required>
-      <template #default="{ attrs, blur }"><button v-bind="attrs" type="button" class="people-select" @click="picker = true" @blur="blur"><Icon name="people" />{{ selectedNames() || '选择人物' }}<Icon name="arrow" :size="16" /></button></template>
+    <FormField v-if="usesPeople" name="people" :label="kind === 'interaction' ? '关联人物' : multiple ? '涉及人物' : '所属人物'" :model-value="selectedIds" :rules="needsPeople ? peopleRule : undefined" type="custom" :required="needsPeople" :hint="kind === 'interaction' ? '可不选。补关联或取消全部选择都只更新人物关联，事件会保留。' : undefined">
+      <template #default="{ attrs, blur }"><button v-bind="attrs" type="button" class="people-select" @click="picker = true" @blur="blur"><Icon name="people" />{{ selectedNames() || (kind === 'interaction' ? '选择人物（可不选）' : '选择人物') }}<Icon name="arrow" :size="16" /></button></template>
     </FormField>
     <template v-for="field in fields[kind]" :key="field.name">
-      <FormField v-if="kind === 'person' && field.name === 'metOn'" name="metOn" label="相识日期" :model-value="draft.metOn" :rules="fieldRule(field)" type="custom" hint="按已知精度记录，可留空。">
-        <template #default="{ attrs, blur }"><PartialDateInput :model-value="String(draft.metOn ?? '')" :input-attrs="attrs" :disabled="busy" @update:model-value="draft.metOn = $event" @blur="blur" /></template>
+      <FormField v-if="field.type === 'partial' || field.type === 'datetime'" :name="field.name" :label="field.label" :model-value="draft[field.name]" :rules="fieldRule(field)" :required="field.required" type="custom" :hint="field.type === 'partial' ? '按已知精度记录，可留空；只知月日可输入 --MM-DD。' : '24 小时制，按本机时区输入；需填写时间所属时区。'">
+        <template #default="{ attrs, blur }"><DateTimeInput :model-value="String(draft[field.name] ?? '')" :input-attrs="attrs" :label="field.label" :mode="field.type === 'datetime' ? 'datetime' : 'partial'" :disabled="busy" @update:model-value="draft[field.name] = $event" @blur="blur" /></template>
       </FormField>
-      <FormField v-else v-model="draft[field.name]" :name="field.name" :label="field.label" :rules="fieldRule(field)" :required="field.required" :type="field.type === 'datetime' ? 'datetime-local' : field.type === 'partial' || !field.type ? 'text' : field.type === 'reference' ? 'select' : field.type" :options="options(field)" :placeholder="field.placeholder || (field.type === 'partial' ? '保留已知精度，如 2026-10 或 --05-12' : '')" :hint="field.name === 'basis' ? '推测请记录在“感受与印象”，不要作为事实。' : undefined" :disabled="busy" />
+      <FormField v-else v-model="draft[field.name]" :name="field.name" :label="field.label" :rules="fieldRule(field)" :required="field.required || kind === 'interaction' && field.name === 'content' && !String(draft.title ?? '').trim()" :type="field.type === 'reference' ? 'select' : field.type || 'text'" :options="options(field)" :placeholder="field.placeholder" :hint="field.name === 'basis' ? '推测请记录在“感受与印象”，不要作为事实。' : kind === 'interaction' && field.name === 'title' ? '可留空，将使用事件或感受的首行作为标题。' : undefined" :disabled="busy" />
     </template>
     <section v-if="kind === 'reflection'" class="form-section">
       <FormField name="evidenceCount" label="事件依据" :model-value="links.length" :rules="value => Number(value) > 0 || '请关联至少一条具体交往，作为这条感受或印象的依据。'" type="custom" required>
@@ -121,5 +128,5 @@ function submit() {
   </ValidatedForm>
   <template #footer><button class="button secondary" :disabled="busy" @click="emit('close')">取消</button><button class="button primary" type="submit" form="entity-form" :disabled="busy">{{ busy ? '正在加密保存…' : '保存' }}</button></template>
 </Drawer>
-<PersonPicker v-if="picker" :selected="selectedIds" :multiple="multiple" :initial-drafts="peopleDrafts" @confirm="choose" @cancel="picker = false" />
+<PersonPicker v-if="picker" :selected="selectedIds" :multiple="multiple" :allow-empty="kind === 'interaction'" :initial-drafts="peopleDrafts" @confirm="choose" @cancel="picker = false" />
 </template>
