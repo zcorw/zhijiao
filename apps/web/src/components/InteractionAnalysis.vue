@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { Interaction, Person } from '@zhijiao/shared';
 import { base, entities, generation, isCurrent, saveEntities, vaultState } from '../state';
 import { label } from '../format';
-import { analysisAvailability, buildAnalysisRecords, createAnalysisDraft, requestInteractionAnalysis, type AnalysisDraft } from '../interaction-analysis';
+import { analysisAvailability, buildAnalysisRecords, createAnalysisDraft, factNeedsClarification, followUpNeedsClarification, reflectionNeedsAdoption, requestInteractionAnalysis, type AnalysisDraft } from '../interaction-analysis';
 import Drawer from './Drawer.vue';
 import DateTimeInput from './DateTimeInput.vue';
 import Icon from './Icon.vue';
@@ -28,9 +28,48 @@ const people = computed(() => entities.value.filter((entry): entry is Person => 
 const selectedPeople = computed(() => draft.value?.people.filter(person => person.selected && !person.isSelf) ?? []);
 const selectedReflections = computed(() => draft.value?.reflections.filter(item => item.selected) ?? []);
 const selectedFollowUps = computed(() => draft.value?.followUps.filter(item => item.selected) ?? []);
+const selectedFacts = computed(() => draft.value?.facts.filter(item => item.selected) ?? []);
 const newPeople = computed(() => selectedPeople.value.filter(person => person.targetId === 'new'));
-const selectedCount = computed(() => newPeople.value.length + selectedReflections.value.length + selectedFollowUps.value.length);
-const empty = computed(() => draft.value && !draft.value.people.some(person => !person.isSelf) && !draft.value.reflections.length && !draft.value.followUps.length);
+const selectedCount = computed(() => newPeople.value.length + selectedReflections.value.length + selectedFollowUps.value.length + selectedFacts.value.length);
+const empty = computed(() => draft.value && !draft.value.people.some(person => !person.isSelf) && !draft.value.reflections.length && !draft.value.followUps.length && !draft.value.facts.length && !draft.value.backgrounds.length);
+const reviewIssue = computed(() => {
+  if (selectedFacts.value.some(item => !item.category.trim() || !item.basis)) return '请为所选事实与偏好补充类别和来源性质。';
+  if (selectedFacts.value.some(item => factNeedsClarification(item) && !item.clarified)) return '请核对所选事实与偏好的来源、含义，并勾选补全确认。';
+  if (selectedReflections.value.some(item => reflectionNeedsAdoption(item) && (!item.adopted || item.content.trim() === item.original.content.trim()))) return '他人的观点或模型建议须改写为自己的感受，并明确采用后才能写入。';
+  if (selectedFollowUps.value.some(item => item.responsibility === 'unknown' || (followUpNeedsClarification(item) && !item.clarified))) return '请补全所选事项的责任，并核对确认。';
+  return '';
+});
+
+type CandidateExplanation = {
+  classificationReason?: string;
+  source?: { type: 'narrator' | 'person' | 'unknown' | 'model'; personId: string | null };
+  uncertainty?: string | null;
+  evidenceQuotes?: string[];
+  evidence?: string;
+  mention?: string;
+  polarity?: 'affirmed' | 'negated' | 'uncertain';
+};
+function sourceLabel(value?: CandidateExplanation['source']) {
+  if (!value || value.type === 'unknown') return '来源待澄清';
+  if (value.type === 'narrator') return '当前用户的叙述';
+  if (value.type === 'model') return '模型建议';
+  return value.personId ? name(value.personId) + '的陈述' : '来源人物待澄清';
+}
+function reviewNotes(item: CandidateExplanation) {
+  const notes = [
+    { label: '归类理由', value: item.classificationReason ?? '旧版候选未提供归类理由，请结合原文核对。' },
+    { label: '来源', value: sourceLabel(item.source) },
+    { label: '不确定性', value: item.uncertainty || '未另行说明，请结合原文核对。' },
+  ];
+  if (item.polarity && item.polarity !== 'affirmed') notes.push({ label: '原文语气', value: item.polarity === 'negated' ? '否定陈述，请保留否定含义。' : '未确定，请勿当作已确认事实。' });
+  return notes;
+}
+function evidenceQuotes(item: CandidateExplanation) {
+  return [...new Set([...(item.evidenceQuotes ?? []), item.evidence ?? item.mention ?? ''].filter(Boolean))];
+}
+function temporalLabel(scope?: 'this-interaction' | 'ongoing' | 'unclear') {
+  return scope === 'this-interaction' ? '仅限本次交往' : scope === 'ongoing' ? '持续性的看法，需核对适用范围' : '适用时间未明确';
+}
 
 function name(key: string) { return draft.value?.people.find(person => person.key === key)?.name ?? '未识别人物'; }
 function ready(keys: string[]) {
@@ -41,6 +80,7 @@ function deselectUnavailable() {
   if (!draft.value) return;
   for (const item of draft.value.reflections) if (!ready([item.personKey])) item.selected = false;
   for (const item of draft.value.followUps) if (!ready(item.personKeys)) item.selected = false;
+  for (const item of draft.value.facts) if (!ready([item.personKey])) item.selected = false;
 }
 function close() { if (saving.value) return; controller.abort(); emit('close'); }
 async function showError(message: string) {
@@ -72,6 +112,7 @@ async function analyze() {
 }
 async function save() {
   if (saving.value || saved.value || !draft.value || !isCurrent(token)) return;
+  if (reviewIssue.value) { await showError(reviewIssue.value); return; }
   error.value = ''; saving.value = true;
   try {
     const records = buildAnalysisRecords(source, draft.value, entities.value, () => base());
@@ -90,7 +131,7 @@ onBeforeUnmount(() => { controller.abort(); draft.value = undefined; error.value
 <template>
   <Drawer title="分析人物与事项" subtitle="从这次交往整理，逐条确认后写入" :busy="saving" @close="close">
     <div class="interaction-analysis">
-      <p v-if="saved" class="success" role="status">已将确认的人物、感受与印象、事项在本机加密保存，并关联这次交往作为来源。</p>
+      <p v-if="saved" class="success" role="status">已将确认的人物、感受与印象、事项、事实与偏好在本机加密保存，并关联这次交往作为来源。</p>
       <p v-if="error" ref="errorElement" class="error" role="alert" tabindex="-1">{{ error }}</p>
       <template v-if="!saved">
         <div class="analysis-intro">
@@ -100,18 +141,19 @@ onBeforeUnmount(() => { controller.abort(); draft.value = undefined; error.value
         </div>
         <p v-if="checking" class="muted" role="status">正在检查分析服务…</p>
         <p v-else-if="!available && !error" class="notice">尚未配置 DeepSeek 分析服务。请在服务端配置 DeepSeek API 密钥后使用。</p>
-        <p v-if="analyzing" class="notice" role="status">正在整理人物、感受与印象及约定事项，可以随时取消。</p>
+        <p v-if="analyzing" class="notice" role="status">正在整理人物、感受与印象、事项、事实与偏好及交往背景，可以随时取消。</p>
         <template v-if="draft">
-          <p class="notice">候选默认均未选中。先勾选人物并确认对应档案，再选择要写入的感受与事项。已有记录会保留。</p>
+          <p class="notice">候选默认均未选中。先勾选人物并确认对应档案，再选择要写入的感受、事项及事实与偏好。交往背景仅供查看。已有记录会保留。</p>
           <p v-if="!vaultState?.directoryComplete || !vaultState?.recordsComplete" class="muted">资料仍在同步，已有档案仅显示本机已下载的完整人物。新建前请留意重复人物。</p>
-          <div v-if="empty" class="empty compact"><Icon name="journal" :size="28" /><h3>这次没有可写入的候选</h3><p>原文中可能未明确提及其他人物、感受或待办事项。可以保留原有交往记录。</p></div>
+          <div v-if="empty" class="empty compact"><Icon name="journal" :size="28" /><h3>这次没有可写入的候选</h3><p>原文中可能未明确提及其他人物、感受、事项、事实与偏好或交往背景。可以保留原有交往记录。</p></div>
           <form v-else id="analysis-review-form" @submit.prevent="save">
             <section class="analysis-section" aria-labelledby="analysis-people-heading">
               <h3 id="analysis-people-heading">涉及的人物 <span class="badge">{{ draft.people.length }}</span></h3>
               <article v-for="person in draft.people" :key="person.key" class="analysis-candidate" :class="{ 'is-selected': person.selected }">
                 <p v-if="person.isSelf" class="analysis-self"><strong>{{ person.name }}</strong><span class="badge">当前用户 · 不建人物档案</span></p>
                 <label v-else class="checkbox analysis-choice"><input v-model="person.selected" type="checkbox" :aria-label="'选择人物：' + person.name" :disabled="saving" @change="deselectUnavailable"><strong>{{ person.name }}</strong></label>
-                <blockquote class="analysis-evidence"><span>原文依据</span>{{ person.mention }}</blockquote>
+                <dl class="analysis-review-notes"><template v-for="note in reviewNotes(person)" :key="note.label"><dt>{{ note.label }}</dt><dd>{{ note.value }}</dd></template></dl>
+                <blockquote v-for="(quote, quoteIndex) in evidenceQuotes(person)" :key="quoteIndex" class="analysis-evidence"><span>原文依据 {{ quoteIndex + 1 }}</span>{{ quote }}</blockquote>
                 <template v-if="!person.isSelf">
                   <label class="field analysis-field"><span>对应人物档案</span><select v-model="person.targetId" :aria-label="person.name + '对应人物档案'" :disabled="!person.selected || saving" :required="person.selected" @change="deselectUnavailable"><option value="">请选择已有档案或新建人物</option><option value="new">新建人物（确认写入时创建）</option><option v-for="existing in people" :key="existing.id" :value="existing.id">{{ existing.displayName }}{{ existing.summary ? ' · ' + existing.summary.slice(0, 40) : '' }}{{ existing.status === 'archived' ? ' · 已归档' : '' }} · {{ existing.id.slice(0, 8) }}</option></select></label>
                   <label v-if="person.targetId === 'new'" class="field analysis-field"><span>新人物姓名</span><input v-model="person.newName" :aria-label="person.name + '新人物姓名'" :disabled="!person.selected || saving" :required="person.selected" maxlength="200"></label>
@@ -125,29 +167,65 @@ onBeforeUnmount(() => { controller.abort(); draft.value = undefined; error.value
               <article v-for="(item, index) in draft.reflections" :key="index" class="analysis-candidate" :class="{ 'is-selected': item.selected }">
                 <label class="checkbox analysis-choice"><input v-model="item.selected" type="checkbox" :aria-label="'选择感受与印象：' + name(item.personKey) + '，第' + (index + 1) + '条'" :disabled="!ready([item.personKey]) || saving"><strong>关于 {{ name(item.personKey) }}</strong><span class="badge">{{ label(item.type) }}</span></label>
                 <p v-if="!ready([item.personKey])" class="muted analysis-hint">请先选择对应人物并确认档案。</p>
+                <p class="analysis-attribution"><strong>观点归属：{{ item.perspective || item.source ? sourceLabel(item.perspective ?? item.source) : '旧版候选未标注，请核对是否为自己的感受' }}</strong><span>{{ temporalLabel(item.temporalScope) }}</span></p>
+                <dl class="analysis-review-notes"><template v-for="note in reviewNotes(item)" :key="note.label"><dt>{{ note.label }}</dt><dd>{{ note.value }}</dd></template></dl>
                 <label class="field analysis-field"><span>类型</span><select v-model="item.type" :aria-label="'感受' + (index + 1) + '类型'" :disabled="!item.selected || saving"><option value="feeling">个人感受</option><option value="hypothesis">性格推测</option><option value="experience">相处体会</option></select></label>
                 <label class="field analysis-field"><span>内容（可修改）</span><textarea v-model="item.content" :aria-label="'感受' + (index + 1) + '内容'" :disabled="!item.selected || saving" :required="item.selected" rows="3" maxlength="3000" /></label>
-                <blockquote class="analysis-evidence"><span>原文依据</span>{{ item.evidence }}</blockquote>
+                <div v-if="reflectionNeedsAdoption(item)" class="analysis-clarification"><p>这条来自他人的观点或模型建议。请先改写为自己的感受，并核对适用范围。</p><label class="checkbox"><input v-model="item.adopted" type="checkbox" :aria-label="'感受' + (index + 1) + '明确采用为自己的感受'" :disabled="!item.selected || saving">我已改写为自己的感受，并明确采用</label></div>
+                <blockquote v-for="(quote, quoteIndex) in evidenceQuotes(item)" :key="quoteIndex" class="analysis-evidence"><span>原文依据 {{ quoteIndex + 1 }}</span>{{ quote }}</blockquote>
               </article>
             </section>
             <section class="analysis-section" aria-labelledby="analysis-followups-heading">
-              <h3 id="analysis-followups-heading">约定与计划 <span class="badge">{{ draft.followUps.length }}</span></h3>
+              <h3 id="analysis-followups-heading">事项 <span class="badge">{{ draft.followUps.length }}</span></h3>
               <p v-if="!draft.followUps.length" class="muted">没有明确的待跟进事项。</p>
               <article v-for="(item, index) in draft.followUps" :key="index" class="analysis-candidate" :class="{ 'is-selected': item.selected }">
                 <label class="checkbox analysis-choice"><input v-model="item.selected" type="checkbox" :aria-label="'选择事项：' + item.title" :disabled="!ready(item.personKeys) || saving"><strong>{{ item.title }}</strong></label>
                 <p class="muted analysis-hint">涉及：{{ item.personKeys.map(name).join('、') }}</p>
                 <p v-if="!ready(item.personKeys)" class="muted analysis-hint">请先选择这件事项涉及的其他人物并确认档案。</p>
+                <dl class="analysis-review-notes"><template v-for="note in reviewNotes(item)" :key="note.label"><dt>{{ note.label }}</dt><dd>{{ note.value }}</dd></template></dl>
+                <p v-if="item.status === 'unclear' || item.responsibility === 'unknown'" class="analysis-hint analysis-warning">事项的责任或约定尚不明确，请核对后补全。</p>
                 <label class="field analysis-field"><span>事项标题（可修改）</span><input v-model="item.title" :aria-label="'事项' + (index + 1) + '标题'" :disabled="!item.selected || saving" :required="item.selected" maxlength="300"></label>
                 <div class="analysis-field-pair">
                   <label class="field analysis-field"><span>类型</span><select v-model="item.type" :aria-label="'事项' + (index + 1) + '类型'" :disabled="!item.selected || saving"><option value="promise">约定</option><option value="plan">个人计划</option></select></label>
-                  <label class="field analysis-field"><span>由谁负责</span><select v-model="item.responsibility" :aria-label="'事项' + (index + 1) + '责任'" :disabled="!item.selected || saving"><option value="me">我</option><option value="other">对方</option><option value="joint">共同</option></select></label>
+                  <label class="field analysis-field"><span>由谁负责</span><select v-model="item.responsibility" :aria-label="'事项' + (index + 1) + '责任'" :disabled="!item.selected || saving" @change="item.clarified = false"><option value="unknown">责任待澄清</option><option value="me">我</option><option value="other">对方</option><option value="joint">共同</option></select></label>
                 </div>
+                <p v-if="item.dueAtText" class="muted analysis-hint">原文期限：{{ item.dueAtText }}。请核对后填写日期，不会自动推定具体期限。</p>
                 <div class="field analysis-field"><span>期限日期（可不填）</span><DateTimeInput v-model="item.dueDate" :input-attrs="{ 'aria-label': '事项' + (index + 1) + '期限日期' }" :label="'事项' + (index + 1) + '期限日期'" :disabled="!item.selected || saving" /></div>
                 <label class="field analysis-field"><span>细节（可修改）</span><textarea v-model="item.details" :aria-label="'事项' + (index + 1) + '细节'" :disabled="!item.selected || saving" rows="2" maxlength="3000" /></label>
-                <blockquote class="analysis-evidence"><span>原文依据</span>{{ item.evidence }}</blockquote>
+                <div v-if="followUpNeedsClarification(item)" class="analysis-clarification"><label class="checkbox"><input v-model="item.clarified" type="checkbox" :aria-label="'事项' + (index + 1) + '已补全并确认责任与约定'" :disabled="!item.selected || saving || item.responsibility === 'unknown'">我已补全并确认责任与约定</label></div>
+                <blockquote v-for="(quote, quoteIndex) in evidenceQuotes(item)" :key="quoteIndex" class="analysis-evidence"><span>原文依据 {{ quoteIndex + 1 }}</span>{{ quote }}</blockquote>
               </article>
             </section>
-            <div class="analysis-summary" aria-live="polite"><strong>已选 {{ selectedPeople.length }} 位人物、{{ selectedReflections.length }} 条感受与印象、{{ selectedFollowUps.length }} 件事项</strong><p>其中 {{ newPeople.length }} 位将新建档案。确认后一次加密保存，感受与事项保留本次交往来源。</p></div>
+            <section class="analysis-section" aria-labelledby="analysis-facts-heading">
+              <h3 id="analysis-facts-heading">事实与偏好 <span class="badge">{{ draft.facts.length }}</span></h3>
+              <p v-if="!draft.facts.length" class="muted">没有事实与偏好候选。</p>
+              <article v-for="(item, index) in draft.facts" :key="index" class="analysis-candidate" :class="{ 'is-selected': item.selected }">
+                <label class="checkbox analysis-choice"><input v-model="item.selected" type="checkbox" :aria-label="'选择事实与偏好：' + name(item.personKey) + '，第' + (index + 1) + '条'" :disabled="!ready([item.personKey]) || saving"><strong>关于 {{ name(item.personKey) }}</strong><span class="badge">{{ item.type === 'preference' ? '偏好' : item.type === 'current-state' ? '当前状态' : '事实' }}</span><span v-if="item.factStatus === 'ambiguous'" class="badge">需澄清</span></label>
+                <p v-if="!ready([item.personKey])" class="muted analysis-hint">请先选择对应人物并确认档案。</p>
+                <dl class="analysis-review-notes"><template v-for="note in reviewNotes(item)" :key="note.label"><dt>{{ note.label }}</dt><dd>{{ note.value }}</dd></template></dl>
+                <p v-if="!item.basis || item.source?.type === 'unknown' || item.source?.type === 'model'" class="analysis-hint analysis-warning">来源待澄清：请根据原文核对来源性质，并补充说明后确认。</p>
+                <div class="analysis-field-pair">
+                  <label class="field analysis-field"><span>类别</span><input v-model="item.category" :aria-label="'事实' + (index + 1) + '类别'" :disabled="!item.selected || saving" :required="item.selected" maxlength="200" @input="item.clarified = false"></label>
+                  <label class="field analysis-field"><span>来源性质</span><select v-model="item.basis" :aria-label="'事实' + (index + 1) + '来源性质'" :disabled="!item.selected || saving" :required="item.selected" @change="item.clarified = false"><option value="">请选择来源性质</option><option value="self-reported">本人陈述</option><option value="observation">观察</option><option value="third-party">转述</option></select></label>
+                </div>
+                <label class="field analysis-field"><span>内容（可修改）</span><textarea v-model="item.content" :aria-label="'事实' + (index + 1) + '内容'" :disabled="!item.selected || saving" :required="item.selected" rows="3" maxlength="3000" @input="item.clarified = false" /></label>
+                <label class="field analysis-field"><span>来源说明（可补充）</span><textarea v-model="item.sourceNote" :aria-label="'事实' + (index + 1) + '来源说明'" :disabled="!item.selected || saving" rows="2" maxlength="3000" @input="item.clarified = false" /></label>
+                <div v-if="factNeedsClarification(item)" class="analysis-clarification"><label class="checkbox"><input v-model="item.clarified" type="checkbox" :aria-label="'事实' + (index + 1) + '已补全并确认来源与含义'" :disabled="!item.selected || saving || !item.basis || !item.category.trim()">我已补全并确认来源与含义</label></div>
+                <blockquote v-for="(quote, quoteIndex) in evidenceQuotes(item)" :key="quoteIndex" class="analysis-evidence"><span>原文依据 {{ quoteIndex + 1 }}</span>{{ quote }}</blockquote>
+              </article>
+            </section>
+            <section class="analysis-section" aria-labelledby="analysis-backgrounds-heading">
+              <h3 id="analysis-backgrounds-heading">交往背景 <span class="badge">{{ draft.backgrounds.length }}</span></h3>
+              <p class="muted analysis-hint">仅供查看，不写入人物档案，也不计入确认写入数量。</p>
+              <p v-if="!draft.backgrounds.length" class="muted">没有单独的交往背景。</p>
+              <article v-for="(item, index) in draft.backgrounds" :key="index" class="analysis-candidate analysis-background">
+                <p class="preserve">{{ item.content }}</p>
+                <p v-if="item.personKeys.length" class="muted analysis-hint">涉及：{{ item.personKeys.map(name).join('、') }}</p>
+                <dl class="analysis-review-notes"><template v-for="note in reviewNotes(item)" :key="note.label"><dt>{{ note.label }}</dt><dd>{{ note.value }}</dd></template></dl>
+                <blockquote v-for="(quote, quoteIndex) in evidenceQuotes(item)" :key="quoteIndex" class="analysis-evidence"><span>原文依据 {{ quoteIndex + 1 }}</span>{{ quote }}</blockquote>
+              </article>
+            </section>
+            <div class="analysis-summary" aria-live="polite"><strong>已选 {{ selectedPeople.length }} 位人物、{{ selectedReflections.length }} 条感受与印象、{{ selectedFollowUps.length }} 件事项、{{ selectedFacts.length }} 条事实与偏好</strong><p>其中 {{ newPeople.length }} 位将新建档案。确认后一次加密保存，所选内容保留本次交往来源。</p><p v-if="reviewIssue" class="analysis-warning">{{ reviewIssue }}</p></div>
           </form>
         </template>
       </template>
@@ -156,7 +234,7 @@ onBeforeUnmount(() => { controller.abort(); draft.value = undefined; error.value
       <button class="button secondary" :disabled="saving" @click="close">{{ saved ? '关闭' : '取消' }}</button>
       <button v-if="!draft && !saved && !checking && error && !available" class="button primary" @click="check">重试检查</button>
       <button v-else-if="!draft && !saved" class="button primary" :disabled="checking || !available || analyzing" @click="analyze">{{ analyzing ? '正在分析…' : error ? '重试分析' : '开始分析' }}</button>
-      <button v-else-if="draft && !saved && !empty" class="button primary" type="submit" form="analysis-review-form" :disabled="saving || !selectedCount">{{ saving ? '正在加密保存…' : '确认写入（' + selectedCount + '）' }}</button>
+      <button v-else-if="draft && !saved && !empty" class="button primary" type="submit" form="analysis-review-form" :disabled="saving || !selectedCount || !!reviewIssue">{{ saving ? '正在加密保存…' : '确认写入（' + selectedCount + '）' }}</button>
     </template>
   </Drawer>
 </template>

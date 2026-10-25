@@ -19,6 +19,19 @@
 .analysis-field input, .analysis-field textarea, .analysis-field select { font-size: 12px; }
 .analysis-field-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .analysis-hint { margin: 8px 0 0; font-size: 11px; }
+.analysis-review-notes { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 7px 10px; margin: 14px 0 0; font-size: 11px; line-height: 1.7; }
+.analysis-review-notes dt { color: var(--muted); }
+.analysis-review-notes dd { margin: 0; white-space: pre-wrap; }
+.analysis-attribution { display: grid; gap: 4px; margin-top: 12px; font-size: 11px; line-height: 1.7; }
+.analysis-attribution strong { color: #63725a; font-weight: 600; }
+.analysis-attribution span { color: var(--muted); }
+.analysis-clarification { margin-top: 14px; padding: 11px 12px; border-radius: 8px; background: #f7f0df; font-size: 11px; line-height: 1.8; }
+.analysis-clarification p { margin: 0 0 8px; }
+.analysis-clarification .checkbox { align-items: flex-start; }
+.analysis-clarification input { flex: 0 0 auto; margin-top: 4px; }
+.analysis-warning { color: #866027 !important; }
+.analysis-background { background: #f7f7f2; }
+.analysis-background > p:first-child { font-size: 12px; line-height: 1.8; margin: 0; }
 .analysis-summary { background: var(--light); border-radius: 11px; padding: 15px; margin-top: 24px; font-size: 12px; }
 .analysis-summary strong { font-weight: 600; }
 .analysis-summary p { margin: 6px 0 0; color: #708265; font-size: 11px; }

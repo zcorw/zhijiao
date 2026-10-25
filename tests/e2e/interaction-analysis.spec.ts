@@ -1,6 +1,6 @@
 import { test, expect, type Locator, type Page } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
-import type { InteractionAnalysis } from '../../packages/shared/src/index.js';
+import type { InteractionAnalysisInput as InteractionAnalysis } from '../../packages/shared/src/index.js';
 
 // Real authentication and encrypted vault writes use only the explicitly selected
 // disposable fictional-data instance. Analysis responses never reach a provider.
@@ -129,9 +129,9 @@ function trackWrites(page: Page) {
 }
 
 async function screenshot(page: Page, name: string) {
-  await mkdir('.local/interaction-analysis/screenshots', { recursive: true });
+  await mkdir('.tools/analysis-v2-screenshots', { recursive: true });
   await expect(page.locator('.toast')).toHaveCount(0);
-  await page.screenshot({ path: `.local/interaction-analysis/screenshots/${name}.png` });
+  await page.screenshot({ path: `.tools/analysis-v2-screenshots/${name}.png` });
 }
 
 test.describe('interaction analysis on desktop', () => {
@@ -291,6 +291,242 @@ test.describe('interaction analysis on desktop', () => {
     await expect(page.locator('.record-card')).toHaveCount(1);
     expect(mocked.requests).toHaveLength(3);
     expect(errors).toEqual([]);
+  });
+
+  test('facts require explicit source review, persist encrypted with their interaction, and skip duplicates', async ({ page }) => {
+    test.setTimeout(90000);
+    const errors: string[] = [];
+    page.on('pageerror', error => errors.push(error.message));
+    const suffix = Date.now();
+    const person = `虚构事实人物${suffix}`;
+    const title = `虚构事实交往${suffix}`;
+    const knownQuote = `${person}说自己喜欢水彩画`;
+    const extraQuote = '他说周末会画风景';
+    const unknownQuote = `有人提到${person}可能不喝咖啡`;
+    const backgroundQuote = '这次交谈在虚构北岸公园进行';
+    const knownContent = '喜欢水彩画，周末画风景';
+    const unclearContent = '可能不喝咖啡，尚未向本人核实';
+    const sourceNote = '虚构转述者未具名；记录为未向本人核实的转述。';
+    const payload: InteractionAnalysis = {
+      people: [{ key: 'p1', name: person, mention: person, isSelf: false, evidenceQuotes: [knownQuote] }],
+      reflections: [], followUps: [],
+      facts: [
+        { personKey: 'p1', type: 'preference', content: knownContent, category: '兴趣偏好', basis: 'self-reported', factStatus: 'candidate', evidence: knownQuote,
+          statementId: 's1', classificationReason: '本人明确表达的兴趣偏好', source: { type: 'person', personId: 'p1' }, uncertainty: null, evidenceQuotes: [knownQuote, extraQuote], polarity: 'affirmed' },
+        { personKey: 'p1', type: 'preference', content: unclearContent, category: null, basis: null, factStatus: 'ambiguous', evidence: unknownQuote,
+          statementId: 's2', classificationReason: '可能是饮食偏好，但转述来源和确定性不清楚', source: { type: 'unknown', personId: null }, uncertainty: '说话者未具名，且使用了“可能”', evidenceQuotes: [unknownQuote], polarity: 'uncertain' },
+      ],
+      backgrounds: [{ personKeys: ['p1'], content: backgroundQuote, evidence: backgroundQuote, statementId: 's3', classificationReason: '交谈场景属于交往背景', source: { type: 'narrator', personId: null }, uncertainty: null, evidenceQuotes: [backgroundQuote], polarity: 'affirmed' }],
+    };
+    const mocked = await mockAnalysis(page, payload);
+    const writes = trackWrites(page);
+    await enter(page);
+    await createPerson(page, person);
+    await createInteraction(page, title, `${knownQuote}。${extraQuote}。${unknownQuote}。${backgroundQuote}。`);
+    const before = writes.length;
+    let analysis = await openAnalysis(page, title);
+    await analysis.getByRole('button', { name: '开始分析', exact: true }).click();
+    await expect(analysis.locator('input[type="checkbox"]:checked')).toHaveCount(0);
+    await expect(analysis.getByRole('heading', { name: /^事实与偏好/ })).toBeVisible();
+    await expect(analysis.getByRole('heading', { name: /^交往背景/ })).toBeVisible();
+    await expect(analysis.locator('.analysis-background')).toContainText(backgroundQuote);
+    await expect(analysis.locator('.analysis-background').locator('input, select, textarea')).toHaveCount(0);
+    await expect(analysis.locator('.analysis-background')).toContainText('交谈场景属于交往背景');
+    await expect(analysis.getByRole('checkbox', { name: /^选择感受与印象/ })).toHaveCount(0);
+    await expect(analysis.getByRole('checkbox', { name: /^选择事项/ })).toHaveCount(0);
+    const known = analysis.getByRole('checkbox', { name: `选择事实与偏好：${person}，第1条`, exact: true });
+    const unclear = analysis.getByRole('checkbox', { name: `选择事实与偏好：${person}，第2条`, exact: true });
+    await expect(known).toBeDisabled();
+    await analysis.getByRole('checkbox', { name: `选择人物：${person}`, exact: true }).check();
+    await expect(analysis.getByRole('combobox', { name: `${person}对应人物档案`, exact: true })).toHaveValue(/^[0-9a-f-]{36}$/);
+    const knownCard = analysis.locator('.analysis-candidate').filter({ has: page.getByRole('checkbox', { name: `选择事实与偏好：${person}，第1条`, exact: true }) });
+    await expect(knownCard.getByRole('checkbox')).toHaveCount(1);
+    await expect(knownCard.locator('.analysis-evidence')).toHaveCount(2);
+    await expect(knownCard).toContainText(extraQuote);
+    await unclear.check();
+    await expect(analysis.getByRole('button', { name: '确认写入（1）', exact: true })).toBeDisabled();
+    await expect(analysis.locator('.analysis-candidate').filter({ has: page.getByRole('checkbox', { name: `选择事实与偏好：${person}，第2条`, exact: true }) })).toContainText('来源待澄清');
+    expect(writes).toHaveLength(before);
+    await unclear.uncheck();
+    await known.check();
+    await expect(analysis.getByRole('button', { name: '确认写入（1）', exact: true })).toBeEnabled();
+    await screenshot(page, 'desktop-facts-and-backgrounds');
+    await page.setViewportSize({ width: 390, height: 844 });
+    await known.scrollIntoViewIfNeeded();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    const factConfirmation = await analysis.getByRole('button', { name: '确认写入（1）', exact: true }).boundingBox();
+    expect(factConfirmation).not.toBeNull();
+    expect(factConfirmation!.y + factConfirmation!.height).toBeLessThanOrEqual(844);
+    await screenshot(page, 'mobile-facts-and-backgrounds');
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await analysis.getByRole('button', { name: '确认写入（1）', exact: true }).click();
+    await expect(analysis.getByRole('status')).toContainText('在本机加密保存');
+    await expect.poll(() => writes.length).toBe(before + 1);
+    expect(writes.at(-1)).not.toContain(knownContent);
+    expect(writes.at(-1)).not.toContain(backgroundQuote);
+    await analysis.locator('.drawer-footer').getByRole('button', { name: '关闭', exact: true }).click();
+    await closeDetails(page, title);
+    await navigate(page, '人物');
+    await personCard(page, person).click();
+    await expect(card(page, knownContent)).toBeVisible();
+    await expect(card(page, unclearContent)).toHaveCount(0);
+    await card(page, knownContent).locator('.card-content').click();
+    let factDetails = page.getByRole('dialog', { name: knownContent, exact: true });
+    await expect(factDetails.locator('.record-definition')).toContainText('本人陈述');
+    await expect(factDetails.locator('.record-definition')).toContainText(title);
+    await expect(factDetails).toContainText(knownQuote);
+    await expect(factDetails).toContainText(extraQuote);
+    await closeDetails(page, knownContent);
+
+    await page.reload();
+    await unlock(page);
+    await navigate(page, '人物');
+    await personCard(page, person).click();
+    await expect(card(page, knownContent)).toHaveCount(1);
+    analysis = await openAnalysis(page, title);
+    await analysis.getByRole('button', { name: '开始分析', exact: true }).click();
+    await analysis.getByRole('checkbox', { name: `选择人物：${person}`, exact: true }).check();
+    await analysis.getByRole('checkbox', { name: `选择事实与偏好：${person}，第2条`, exact: true }).check();
+    await analysis.getByRole('textbox', { name: '事实2类别', exact: true }).fill('饮食偏好');
+    await analysis.getByRole('combobox', { name: '事实2来源性质', exact: true }).selectOption('third-party');
+    await analysis.getByRole('textbox', { name: '事实2来源说明', exact: true }).fill(sourceNote);
+    await expect(analysis.getByRole('button', { name: '确认写入（1）', exact: true })).toBeDisabled();
+    await analysis.getByRole('checkbox', { name: '事实2已补全并确认来源与含义', exact: true }).check();
+    await analysis.getByRole('button', { name: '确认写入（1）', exact: true }).click();
+    await expect(analysis.getByRole('status')).toContainText('在本机加密保存');
+    await expect.poll(() => writes.length).toBe(before + 2);
+    expect(writes.at(-1)).not.toContain(unclearContent);
+    expect(writes.at(-1)).not.toContain(sourceNote);
+    await analysis.locator('.drawer-footer').getByRole('button', { name: '关闭', exact: true }).click();
+    await closeDetails(page, title);
+    await navigate(page, '人物');
+    await personCard(page, person).click();
+    await expect(card(page, unclearContent)).toHaveCount(1);
+    await card(page, unclearContent).locator('.card-content').click();
+    factDetails = page.getByRole('dialog', { name: unclearContent, exact: true });
+    await expect(factDetails.locator('.record-definition')).toContainText('转述');
+    await expect(factDetails).toContainText(sourceNote);
+    await expect(factDetails).toContainText(title);
+    await expect(factDetails).toContainText('未具名');
+    await closeDetails(page, unclearContent);
+
+    await page.reload();
+    await unlock(page);
+    await navigate(page, '人物');
+    await personCard(page, person).click();
+    await expect(card(page, knownContent)).toHaveCount(1);
+    await expect(card(page, unclearContent)).toHaveCount(1);
+    analysis = await openAnalysis(page, title);
+    await analysis.getByRole('button', { name: '开始分析', exact: true }).click();
+    await analysis.getByRole('checkbox', { name: `选择人物：${person}`, exact: true }).check();
+    for (const index of [1, 2]) await analysis.getByRole('checkbox', { name: `选择事实与偏好：${person}，第${index}条`, exact: true }).check();
+    await analysis.getByRole('textbox', { name: '事实2类别', exact: true }).fill('饮食偏好');
+    await analysis.getByRole('combobox', { name: '事实2来源性质', exact: true }).selectOption('third-party');
+    await analysis.getByRole('textbox', { name: '事实2来源说明', exact: true }).fill(sourceNote);
+    await analysis.getByRole('checkbox', { name: '事实2已补全并确认来源与含义', exact: true }).check();
+    await analysis.getByRole('button', { name: '确认写入（2）', exact: true }).click();
+    await expect(analysis.getByRole('alert')).toContainText('没有需要新增的内容');
+    expect(writes).toHaveLength(before + 2);
+    await analysis.getByRole('button', { name: '取消', exact: true }).click();
+    expect(mocked.requests).toHaveLength(3);
+    expect(errors).toEqual([]);
+  });
+
+  test('other perspectives require rewritten adoption and unclear tasks require confirmed responsibility', async ({ page }) => {
+    test.setTimeout(90000);
+    const suffix = Date.now();
+    const person = `虚构视角人物${suffix}`;
+    const title = `虚构视角交往${suffix}`;
+    const quote = `${person}说自己最近觉得做事谨慎`;
+    const taskQuote = `下次和${person}碰面时也许带上画册，谁来带尚未说好`;
+    const rewritten = `听${person}谈起最近的谨慎，我这次感到彼此能坦诚说明顾虑。`;
+    const taskTitle = `与${person}核对画册`;
+    const payload: InteractionAnalysis = {
+      people: [{ key: 'p1', name: person, mention: person, isSelf: false }],
+      reflections: [{ personKey: 'p1', type: 'feeling', content: '最近觉得做事谨慎', evidence: quote,
+        classificationReason: '本人对自己的感受，观点属于被记录的人', source: { type: 'person', personId: 'p1' }, perspective: { type: 'person', personId: 'p1' }, temporalScope: 'this-interaction', evidenceQuotes: [quote], uncertainty: null }],
+      followUps: [{ personKeys: ['p1'], title: taskTitle, details: taskQuote, type: 'plan', responsibility: 'unknown', status: 'unclear', dueAtText: '下次', evidence: taskQuote,
+        classificationReason: '存在后续意向，责任与时间尚未明确', source: { type: 'narrator', personId: null }, uncertainty: '尚未确定由谁负责', evidenceQuotes: [taskQuote] }],
+      facts: [], backgrounds: [],
+    };
+    await mockAnalysis(page, payload);
+    const writes = trackWrites(page);
+    await enter(page);
+    await createPerson(page, person);
+    await createInteraction(page, title, `${quote}。${taskQuote}。`);
+    const before = writes.length;
+    const analysis = await openAnalysis(page, title);
+    await analysis.getByRole('button', { name: '开始分析', exact: true }).click();
+    await expect(analysis.locator('input[type="checkbox"]:checked')).toHaveCount(0);
+    await expect(analysis.locator('.analysis-attribution')).toContainText(`${person}的陈述`);
+    await expect(analysis.locator('.analysis-attribution')).toContainText('仅限本次交往');
+    await analysis.getByRole('checkbox', { name: `选择人物：${person}`, exact: true }).check();
+    await analysis.getByRole('checkbox', { name: `选择感受与印象：${person}，第1条`, exact: true }).check();
+    await analysis.getByRole('checkbox', { name: '感受1明确采用为自己的感受', exact: true }).check();
+    await expect(analysis.getByRole('button', { name: '确认写入（1）', exact: true })).toBeDisabled();
+    await analysis.getByRole('textbox', { name: '感受1内容', exact: true }).fill(rewritten);
+    await expect(analysis.getByRole('button', { name: '确认写入（1）', exact: true })).toBeEnabled();
+    await analysis.getByRole('checkbox', { name: `选择事项：${taskTitle}`, exact: true }).check();
+    await expect(analysis.getByRole('combobox', { name: '事项1责任', exact: true })).toHaveValue('unknown');
+    await expect(analysis.getByRole('checkbox', { name: '事项1已补全并确认责任与约定', exact: true })).toBeDisabled();
+    await expect(analysis.getByRole('button', { name: '确认写入（2）', exact: true })).toBeDisabled();
+    await analysis.getByRole('combobox', { name: '事项1责任', exact: true }).selectOption('me');
+    await expect(analysis.getByRole('button', { name: '确认写入（2）', exact: true })).toBeDisabled();
+    await analysis.getByRole('checkbox', { name: '事项1已补全并确认责任与约定', exact: true }).check();
+    await expect(analysis).toContainText('原文期限：下次');
+    await expect(analysis.getByRole('button', { name: '确认写入（2）', exact: true })).toBeEnabled();
+    expect(writes).toHaveLength(before);
+    await analysis.getByRole('button', { name: '确认写入（2）', exact: true }).click();
+    await expect(analysis.getByRole('status')).toContainText('在本机加密保存');
+    await expect.poll(() => writes.length).toBe(before + 1);
+    expect(writes.at(-1)).not.toContain(rewritten);
+    await analysis.locator('.drawer-footer').getByRole('button', { name: '关闭', exact: true }).click();
+    await closeDetails(page, title);
+    await navigate(page, '人物');
+    await personCard(page, person).click();
+    await page.locator('.detail-tabs').getByRole('button', { name: /^感受与印象/ }).click();
+    await card(page, rewritten).locator('.card-content').click();
+    const reflection = page.getByRole('dialog', { name: rewritten, exact: true });
+    await expect(reflection).toContainText('用户已显式采用并改写');
+    await expect(reflection).toContainText('最近觉得做事谨慎');
+    await closeDetails(page, rewritten);
+    await page.locator('.detail-tabs').getByRole('button', { name: /^事项/ }).click();
+    await card(page, taskTitle).locator('.card-content').click();
+    const task = page.getByRole('dialog', { name: taskTitle, exact: true });
+    await expect(task).toContainText('用户已澄清责任');
+    await expect(task).toContainText('下次');
+  });
+
+  test('a background-only result remains readable without creating any entities', async ({ page }) => {
+    const suffix = Date.now();
+    const title = `虚构背景交往${suffix}`;
+    const content = '虚构东风书店今天更换了展架，雨停后窗边透进了阳光。';
+    const payload: InteractionAnalysis = {
+      people: [], reflections: [], followUps: [], facts: [],
+      backgrounds: [{ personKeys: [], content, evidence: content, classificationReason: '环境描写只属于本次交往背景', source: { type: 'narrator', personId: null }, uncertainty: null, evidenceQuotes: [content] }],
+    };
+    await mockAnalysis(page, payload);
+    const writes = trackWrites(page);
+    await enter(page);
+    await navigate(page, '人物');
+    const beforePeople = await page.locator('.person-card').count();
+    await createInteraction(page, title, content);
+    const before = writes.length;
+    const analysis = await openAnalysis(page, title);
+    await analysis.getByRole('button', { name: '开始分析', exact: true }).click();
+    await expect(analysis.locator('.analysis-background')).toContainText(content);
+    await expect(analysis).toContainText('仅供查看，不写入人物档案');
+    await expect(analysis.getByRole('heading', { name: '这次没有可写入的候选', exact: true })).toHaveCount(0);
+    await expect(analysis.getByRole('checkbox')).toHaveCount(0);
+    await expect(analysis.getByRole('button', { name: '确认写入（0）', exact: true })).toBeDisabled();
+    await expect(analysis).toContainText('没有明确的感受与印象候选');
+    await expect(analysis).toContainText('没有明确的待跟进事项');
+    await expect(analysis).toContainText('没有事实与偏好候选');
+    await analysis.getByRole('button', { name: '取消', exact: true }).click();
+    await closeDetails(page, title);
+    await navigate(page, '人物');
+    await expect(page.locator('.person-card')).toHaveCount(beforePeople);
+    expect(writes).toHaveLength(before);
   });
 });
 
