@@ -88,7 +88,11 @@ bash scripts/ops/deploy.sh ghcr.io/zcorw/zhijiao@sha256:<已核验的64位digest
 
 脚本要求明确固定 digest 并取得 `flock` 升级锁，校验配置、拉取新应用镜像、停止应用写入、完成加密备份、执行一次带数据库 advisory lock 的迁移，最后启动应用并等待健康检查。每一步失败都阻止后续步骤；停止写入后失败会留下停机或不健康应用，必须人工诊断恢复。脚本不会自动降级数据库或删除卷。
 
-健康成功后，本机 `.local/deployment-<项目>.env` 记录固定 digest，后续运维脚本会作为 Compose 的第二个数据文件读取它。直接调用 `docker compose` 时需同样加 `--env-file .env --env-file .local/deployment-zhijiao.env`，或将核验后的 digest 同步到 `.env`；避免误用旧的 `APP_IMAGE`。保留升级前 digest、备份文件和迁移版本。数据库镜像升级另行审阅，部署脚本不会顺带升级 PostgreSQL 容器。
+部署目录存在 `compose.deepseek.yaml` 时，`deploy.sh` 自动在基础 `compose.yaml` 之后加载它，配置检查、拉取、备份、迁移及启动全程使用同一套配置，一次升级即可保留 DeepSeek 密钥挂载和模型设置，无需再手动执行第二次 `up`。执行前须准备好 `.env` 中 `DEEPSEEK_API_KEY_PATH` 指向的密钥文件（默认 `.local/secrets/deepseek-api-key`），并确保容器内的应用用户能够读取它；`config --quiet` 不代替密钥文件可读性检查。覆盖文件 `compose.deepseek.yaml` 不存在时沿用基础升级流程。独立备份与恢复脚本保持原有配置。
+
+`bash tests/ops/deploy.test.sh` 使用隔离的模拟 Docker/备份工具检查覆盖文件保留、路径含空格、镜像选择及失败处理，已接入 CI；不会访问真实容器或 VPS。
+
+健康成功后，本机 `.local/deployment-<项目>.env` 记录固定 digest，后续运维脚本会作为 Compose 的第二个数据文件读取它。直接调用 `docker compose` 时需同样加 `--env-file .env --env-file .local/deployment-zhijiao.env`，或将核验后的 digest 同步到 `.env`；启用 DeepSeek 时同时指定 `-f compose.yaml -f compose.deepseek.yaml`，避免误用旧的 `APP_IMAGE` 或移除密钥挂载。保留升级前 digest、备份文件和迁移版本。数据库镜像升级另行审阅，部署脚本不会顺带升级 PostgreSQL 容器。
 
 `/api/health` 的成功仅表示应用及数据库可用。升级后还需人工检查登录、解锁、人物搜索、目录状态、写入并同步到另一设备、历史恢复、头像、退出、锁定与当前会话撤销，不把容器 healthy 当作完整业务验收。
 

@@ -40,6 +40,8 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
+      - name: Check deployment flow with mocked tools
+        run: bash tests/ops/deploy.test.sh
       - run: npm run test:integration
       - run: npm run build
       - name: Validate container configuration
