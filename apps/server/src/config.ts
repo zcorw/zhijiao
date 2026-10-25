@@ -3,6 +3,7 @@ import type { PoolConfig } from 'pg';
 export interface AppConfig {
   database: PoolConfig; origin: string; secret: string; secure: boolean; idleMs: number; absoluteMs: number;
   trustProxy: number; port: number; staticDir?: string;
+  analysis?: { apiKey: string; model: string; timeoutMs: number };
 }
 function secret(name: string, env: NodeJS.ProcessEnv): string | undefined {
   const file = env[name + '_FILE'];
@@ -29,8 +30,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (env.NODE_ENV === 'production' && url.protocol !== 'https:') throw new Error('Production APP_ORIGIN requires trusted HTTPS');
   const sessionSecret = secret('SESSION_SECRET', env);
   if (!sessionSecret || sessionSecret.length < 32) throw new Error('Configure SESSION_SECRET_FILE with at least 32 characters');
+  const analysisKey = secret('DEEPSEEK_API_KEY', env)?.trim();
+  const analysisModel = env.DEEPSEEK_MODEL?.trim() || 'deepseek-flash';
+  let analysis: AppConfig['analysis'];
+  if (analysisKey) {
+    if (analysisModel.length > 200 || analysisKey.length > 4096) throw new Error('Invalid interaction AI configuration');
+    analysis = { apiKey: analysisKey, model: analysisModel,
+      timeoutMs: integer(env.INTERACTION_AI_TIMEOUT_MS, 60000, 1000, 120000) };
+  }
   return { database: databaseConfig(env), origin, secret: sessionSecret, secure: url.protocol === 'https:',
     idleMs: integer(env.SESSION_IDLE_MS, 86400000, 60000, 604800000),
     absoluteMs: integer(env.SESSION_ABSOLUTE_MS, 2592000000, 60000, 7776000000),
-    trustProxy: integer(env.TRUST_PROXY, 0, 0, 2), port, staticDir: env.STATIC_DIR };
+    trustProxy: integer(env.TRUST_PROXY, 0, 0, 2), port, staticDir: env.STATIC_DIR, ...(analysis ? { analysis } : {}) };
 }
