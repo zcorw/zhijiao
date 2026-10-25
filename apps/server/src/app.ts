@@ -15,6 +15,7 @@ import { createAccountSession } from '@tts-workbench/account-postgres/session';
 import { DATABASE, CONFIG } from './database.js';
 import { AuthController, AuthService, AuthGuard, csrfMiddleware } from './auth.js';
 import { VaultController, VaultService } from './vaults.js';
+import { InteractionAnalysisController, InteractionAnalysisService } from './interaction-analysis.js';
 import type { AppConfig } from './config.js';
 @Catch()
 class PrivateErrorFilter implements ExceptionFilter {
@@ -39,7 +40,7 @@ export async function createApplication(config: AppConfig, pool: Pool): Promise<
   class InfrastructureModule {}
   @Module({ imports: [InfrastructureModule, AccountModule.registerAsync({ inject: [DATABASE], useFactory: (database: Pool) => ({
     repository: new PostgresAccountRepository(database), passwords: argon2Passwords, randomId: randomUUID,
-  }) })], controllers: [AuthController, VaultController, HealthController], providers: [AuthService, AuthGuard, VaultService] })
+  }) })], controllers: [AuthController, VaultController, HealthController, InteractionAnalysisController], providers: [AuthService, AuthGuard, VaultService, InteractionAnalysisService] })
   class ApplicationModule {}
   const app = await NestFactory.create<NestExpressApplication>(ApplicationModule, { logger: false, bodyParser: false });
   app.setGlobalPrefix('api'); app.useGlobalFilters(new PrivateErrorFilter()); app.set('trust proxy', config.trustProxy);

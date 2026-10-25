@@ -1,0 +1,30 @@
+.interaction-analysis { min-width: 0; }
+.analysis-intro > p { font-size: 12px; line-height: 1.9; }
+.analysis-source { border: 1px solid var(--line); border-radius: 10px; background: #fffdf9; padding: 12px 14px; margin-bottom: 20px; font-size: 12px; }
+.analysis-source summary { color: var(--green); cursor: pointer; }
+.analysis-source strong { display: block; margin: 12px 0 6px; overflow-wrap: anywhere; }
+.analysis-source p { margin-bottom: 0; max-height: 220px; overflow: auto; }
+.analysis-section { margin-top: 26px; }
+.analysis-section > h3 { display: flex; align-items: center; gap: 8px; }
+.analysis-candidate { background: #fffdf9; border: 1px solid var(--line); border-radius: 12px; padding: 17px; margin: 12px 0; overflow-wrap: anywhere; }
+.analysis-candidate.is-selected { border-color: #98b18c; background: #fcfdf8; }
+.analysis-choice { align-items: flex-start; flex-wrap: wrap; gap: 8px; }
+.analysis-choice input { margin-top: 3px; }
+.analysis-choice strong { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; }
+.analysis-self { display: flex; flex-wrap: wrap; gap: 8px; font-size: 13px; margin-bottom: 10px; }
+.analysis-evidence { border-left: 2px solid #cbd8c3; margin: 14px 0 0; padding-left: 11px; font-size: 12px; color: #72816a; white-space: pre-wrap; }
+.analysis-evidence span { display: block; color: var(--muted); font-size: 10px; margin-bottom: 4px; }
+.analysis-field { display: grid; gap: 6px; margin-top: 14px; }
+.analysis-field > span { color: #63725a; font-size: 11px; }
+.analysis-field input, .analysis-field textarea, .analysis-field select { font-size: 12px; }
+.analysis-field-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.analysis-hint { margin: 8px 0 0; font-size: 11px; }
+.analysis-summary { background: var(--light); border-radius: 11px; padding: 15px; margin-top: 24px; font-size: 12px; }
+.analysis-summary strong { font-weight: 600; }
+.analysis-summary p { margin: 6px 0 0; color: #708265; font-size: 11px; }
+.record-analysis-button { width: 100%; margin: 0 0 22px; }
+@media (max-width: 680px) {
+  .analysis-candidate { padding: 14px; }
+  .analysis-field input, .analysis-field textarea, .analysis-field select { font-size: 16px; }
+  .analysis-choice strong { font-size: 12px; }
+}

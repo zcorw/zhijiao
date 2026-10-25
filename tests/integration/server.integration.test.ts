@@ -121,6 +121,20 @@ suite('server real PostgreSQL contracts', () => {
     expect((await one.call('/auth/me')).status).toBe(200); expect((await two.call('/auth/me')).status).toBe(401); expect((await three.call('/auth/me')).status).toBe(401);
     expect((await pool.query('SELECT count(*)::int n FROM ac_session_revocations')).rows[0].n).toBeGreaterThanOrEqual(2);
   });
+  it('authenticates analysis status and protects analysis submission with Origin and CSRF', async () => {
+    const client = new Client();
+    expect((await client.call('/analysis/status')).status).toBe(401);
+    await client.login();
+    const status = await client.call('/analysis/status');
+    expect(status.status).toBe(200); expect(status.headers.get('cache-control')).toBe('no-store');
+    expect(await status.json()).toEqual({ available: false });
+    const input = { title: '虚构交往', content: '我与小岚见面。' };
+    expect((await client.call('/analysis/interaction', 'POST', input, { origin: 'https://other.invalid' })).status).toBe(403);
+    expect((await client.call('/analysis/interaction', 'POST', input, { 'x-csrf-token': '' })).status).toBe(403);
+    expect((await client.call('/analysis/interaction', 'POST', { ...input, currentUser: 'supplied' })).status).toBe(400);
+    const unavailable = await client.call('/analysis/interaction', 'POST', input);
+    expect(unavailable.status).toBe(503); expect(await unavailable.json()).toEqual({ code: 'AI_NOT_CONFIGURED' });
+  });
   it('persists SID digests and never revives a destroyed SID despite racing/late saves', async () => {
     for (let n = 0; n < 8; n++) {
       const sid = randomUUID(); const data = sessionData(); await set(sid, data);
