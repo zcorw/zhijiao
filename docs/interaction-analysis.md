@@ -22,6 +22,8 @@ docker compose -f compose.yaml -f compose.deepseek.yaml up -d --build app
 
 该命令需由使用者在自己的目标环境执行。普通 `compose.yaml` 无需 AI 密钥即可启动。
 
+后续升级使用 `bash scripts/ops/deploy.sh ghcr.io/zcorw/zhijiao@sha256:<已核验的64位digest>`。脚本发现部署目录中的 `compose.deepseek.yaml` 后会自动加载，保留密钥挂载和模型配置，无需升级后再执行第二次 Compose 启动。升级前仍需准备好密钥文件及既有加密备份配置，完整流程见 [运维说明](operations.md#人工升级)。
+
 ## 数据范围与验证
 
 只有在用户主动点击开始分析时，已解锁的本次标题、正文和发生日期经同源鉴权接口转发至上述 DeepSeek 地址；账号姓名、其他人物档案、历史版本、口令与加密密钥均不进入分析载荷。请求及结果不落入本项目数据库或应用日志，候选只在页面内存暂存。DeepSeek 是该功能的外部数据接收方，其处理与保留由服务方政策决定。

@@ -3,6 +3,10 @@
 set -Eeuo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh"
 [[ $# == 1 && "$1" =~ ^ghcr\.io/zcorw/zhijiao@sha256:[a-f0-9]{64}$ ]] || fail "Usage: bash scripts/ops/deploy.sh ghcr.io/zcorw/zhijiao@sha256:<64 hex characters>"
+# Keep optional app configuration on every command in this upgrade.
+if [[ -f "$OPS_ROOT/compose.deepseek.yaml" ]]; then
+  COMPOSE+=(-f "$OPS_ROOT/compose.deepseek.yaml")
+fi
 upgrade_lock
 export APP_IMAGE="$1"
 "${COMPOSE[@]}" config --quiet
