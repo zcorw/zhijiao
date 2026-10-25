@@ -36,7 +36,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (analysisKey) {
     if (analysisModel.length > 200 || analysisKey.length > 4096) throw new Error('Invalid interaction AI configuration');
     analysis = { apiKey: analysisKey, model: analysisModel,
-      timeoutMs: integer(env.INTERACTION_AI_TIMEOUT_MS, 60000, 1000, 120000) };
+      timeoutMs: integer(env.INTERACTION_AI_TIMEOUT_MS, 300000, 1000, 600000) };
   }
   return { database: databaseConfig(env), origin, secret: sessionSecret, secure: url.protocol === 'https:',
     idleMs: integer(env.SESSION_IDLE_MS, 86400000, 60000, 604800000),

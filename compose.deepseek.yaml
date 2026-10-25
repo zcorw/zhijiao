@@ -4,7 +4,7 @@ services:
     environment:
       DEEPSEEK_API_KEY_FILE: /run/secrets/deepseek_api_key
       DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
-      INTERACTION_AI_TIMEOUT_MS: ${INTERACTION_AI_TIMEOUT_MS:-60000}
+      INTERACTION_AI_TIMEOUT_MS: ${INTERACTION_AI_TIMEOUT_MS:-300000}
     secrets:
       - deepseek_api_key
 secrets:
