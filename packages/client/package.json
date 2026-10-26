@@ -2,5 +2,5 @@
   "name": "@zhijiao/client", "version": "0.1.0", "private": true, "type": "module",
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
   "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit" },
-  "dependencies": { "@zhijiao/shared": "0.1.0", "pinyin-pro": "3.27.0", "zod": "4.5.4" }
+  "dependencies": { "@zhijiao/shared": "0.1.0", "pinyin-pro": "3.27.0", "zod": "4.6.7" }
 }

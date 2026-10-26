@@ -1,5 +1,8 @@
 import 'reflect-metadata';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { request as httpRequest } from 'node:http';
+import { setTimeout as delay } from 'node:timers/promises';
+import { gzipSync } from 'node:zlib';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import session, { type SessionData } from 'express-session';
 import type { Request } from 'express';
@@ -111,6 +114,35 @@ suite('server real PostgreSQL contracts', () => {
     expect((await client.call('/auth/logout', 'POST', {}, { 'x-csrf-token': 'é'.repeat(43) })).status).toBe(403);
     expect((await client.call('/auth/logout', 'POST')).status).toBe(204);
     expect((await client.call('/auth/me')).status).toBe(401);
+  });
+  it('accepts gzip JSON credentials in the login flow', async () => {
+    const client = new Client(); const challenge = await client.call('/auth/csrf');
+    const token = (await challenge.json()).csrfToken;
+    const response = await fetch(base + '/auth/login', { method: 'POST', headers: {
+      cookie: client.cookie, origin: config.origin, 'x-csrf-token': token,
+      'content-type': 'application/json', 'content-encoding': 'gzip',
+    }, body: gzipSync(JSON.stringify({ login: 'fictional', password: 'fictional-password-for-tests' })) });
+    expect(response.status).toBe(200);
+    expect((await response.json()).account.id).toBe(ownerId);
+  });
+  it('survives unauthenticated gzip requests with trailing bytes after the compressed frame', async () => {
+    // The NUL ends gzip decoding early; later chunks must not reach an unguarded finished decoder.
+    const payload = Buffer.concat([gzipSync('{"probe":"fictional"}'), Buffer.from([0]), Buffer.alloc(100 * 1024, 0x58)]);
+    const status = await new Promise<number | undefined>((resolve, reject) => {
+      const request = httpRequest(base + '/auth/login', { method: 'POST', agent: false, headers: {
+        origin: config.origin, 'content-type': 'application/json', 'content-encoding': 'gzip', 'content-length': payload.length,
+      } }, response => {
+        response.on('error', reject); response.resume(); response.on('end', () => resolve(response.statusCode));
+      });
+      request.on('error', reject);
+      request.setTimeout(5000, () => request.destroy(new Error('Compressed request did not finish')));
+      request.end(payload);
+    });
+    expect(status).toBe(403);
+    // Decoder errors can arrive after the response; allow those callbacks to run before checking liveness.
+    await delay(200);
+    const health = await fetch(base + '/health'); expect(health.status).toBe(200);
+    expect(await health.json()).toEqual({ status: 'ok' });
   });
   it('lists sessions and persistently revokes single/other sessions', async () => {
     const one = new Client(); const two = new Client(); const three = new Client(); await one.login(); await two.login(); await three.login();

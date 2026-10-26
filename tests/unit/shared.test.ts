@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { aad, partialDateSchema, decimal, envelopeSchema } from '../../packages/shared/src/index.js';
+import { aad, partialDateSchema, decimal, envelopeSchema, operationSchema } from '../../packages/shared/src/index.js';
 describe('authenticated metadata and partial dates', () => {
   it('keeps unknown years absent and validates calendar precision', () => {
     for (const value of ['2026','2026-10','2024-02-29','0004-02-29','--02-29']) expect(partialDateSchema.parse(value)).toBe(value);
@@ -14,5 +14,14 @@ describe('authenticated metadata and partial dates', () => {
     const e = { vaultId: crypto.randomUUID(), recordId: crypto.randomUUID(), revision: '1', keyVersion: 1, formatVersion: 1 as const, lane: 'records' as const, tombstone: false };
     for (const altered of [{ ...e, revision: '2' }, { ...e, recordId: crypto.randomUUID() }, { ...e, vaultId: crypto.randomUUID() }, { ...e, keyVersion: 2 }, { ...e, lane: 'assets' as const }, { ...e, variant: 'thumb' as const }, { ...e, tombstone: true }]) expect(aad(altered)).not.toBe(aad(e));
     expect(envelopeSchema.safeParse({...e, nonce: 'AAAAAAAAAAAAAAAA', ciphertext: 'A'.repeat(24), ownerId: crypto.randomUUID()}).success).toBe(false);
+  });
+  it('rejects oversized mutation batches before collecting element errors', () => {
+    const result = operationSchema.safeParse({
+      operationId: crypto.randomUUID(), mutations: Array.from({ length: 101 }, () => ({})),
+    });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues).toEqual([
+      expect.objectContaining({ code: 'too_big', path: ['mutations'], maximum: 100 }),
+    ]);
   });
 });

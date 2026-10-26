@@ -55,7 +55,11 @@ docker compose run --rm --no-deps app node apps/server/dist/account-cli.js reset
 
 根据 [GitHub Container registry 文档](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)，新建 GHCR 包默认私有。发布工作流会用只读 API 检查已存在包的可见性，已有公开包则拒绝发布，其他权限或网络错误也会阻止发布。首次发布后仍须核验实际包权限再使用。镜像中含用户授权复用的私有账号库，不应公开发布。镜像发布失败、权限不足或不能核实已有标签时应停下，不改变权限或安全设置来绕过。生产始终使用 digest，不能只依赖标签。
 
-固定构建工具与数据库版本为 Node `22.23.3-bookworm-slim`、PostgreSQL `17.11-bookworm`。版本源于 [Docker 官方 Node 映像清单](https://github.com/docker-library/official-images/blob/master/library/node) 和 [Docker 官方 PostgreSQL 映像清单](https://github.com/docker-library/official-images/blob/master/library/postgres)，数据库修订说明见 [PostgreSQL 17.11](https://www.postgresql.org/docs/17/release-17-11.html)。这些版本标签仍可能被基础映像维护者重建；生产应用镜像由发布输出的 digest 固定，每次升级基础镜像须重新构建及验证。
+固定构建工具与数据库版本为 Node `22.23.4-bookworm-slim`、PostgreSQL `17.11-bookworm`。版本源于 [Docker 官方 Node 映像清单](https://github.com/docker-library/official-images/blob/master/library/node) 和 [Docker 官方 PostgreSQL 映像清单](https://github.com/docker-library/official-images/blob/master/library/postgres)，数据库修订说明见 [PostgreSQL 17.11](https://www.postgresql.org/docs/17/release-17-11.html)。这些版本标签仍可能被基础映像维护者重建；生产应用镜像由发布输出的 digest 固定，每次升级基础镜像须重新构建及验证。
+
+根 `package.json` 的 npm `overrides` 将请求解析依赖固定为 `body-parser@2.4.0` 和 `multer@2.5.0`，分别修复 [压缩请求体 DoS](https://github.com/expressjs/body-parser/security/advisories/GHSA-27r3-jxmh-p828) 和 [异步 fileFilter DoS](https://github.com/expressjs/multer/security/advisories/GHSA-q7qp-rjg7-q26m)。当前 NestJS 适配器仍固定旧版 multer，升级 Node 或仅更新 NestJS 不保证消除这些依赖漏洞；锁文件也必须同步更新。待上游依赖采用修复版本后，再评估移除覆盖。依赖升级需重新安装、验证并重建应用镜像，已有容器不会自动更新。
+
+各工作区及账号库集成副本的 Zod 统一固定为 `4.6.7`，修复 [集合校验资源耗尽 DoS](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)。旧版对超限数组逐项校验后才检查长度；修复版会在元素校验前拒绝超过上限的集合。现有认证、输入大小限制和数组上限仍需保留。
 
 ## 独立加密备份
 

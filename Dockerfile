@@ -1,12 +1,12 @@
 # Version pins are reviewed in docs/operations.md. Production uses the resulting digest.
-FROM node:22.23.3-bookworm-slim AS build
+FROM node:22.23.4-bookworm-slim AS build
 WORKDIR /app
 COPY . .
 RUN npm ci --no-audit --no-fund \
     && npm run build \
     && npm prune --omit=dev
 
-FROM node:22.23.3-bookworm-slim AS runtime
+FROM node:22.23.4-bookworm-slim AS runtime
 ENV NODE_ENV=production \
     PORT=3000 \
     HOST=0.0.0.0 \
