@@ -11,6 +11,10 @@
     "apps/*",
     "vendor/nest-account/packages/*"
   ],
+  "overrides": {
+    "body-parser": "2.4.0",
+    "multer": "2.5.0"
+  },
   "scripts": {
     "build:base": "npm run build -w @tts-workbench/account-core && npm run build -w @tts-workbench/account-postgres && npm run build -w @zhijiao/shared",
     "build": "npm run build:base && npm run build -w @zhijiao/client && npm run build -w @zhijiao/web && npm run build -w @zhijiao/server",

@@ -23,7 +23,7 @@
 
 ## 本机开发
 
-需要 Node.js ≥ 22.12、npm、Git，以及可用的 PostgreSQL；容器验证需要 Docker Engine 和 Docker Compose v2。构建及 CI 固定 Node 22.23.3，数据库容器固定 PostgreSQL 17.11。安装依赖前先检查工作目录及现有文件。
+需要 Node.js ≥ 22.12、npm、Git，以及可用的 PostgreSQL；容器验证需要 Docker Engine 和 Docker Compose v2。构建及 CI 固定 Node 22.23.4，数据库容器固定 PostgreSQL 17.11。安装依赖前先检查工作目录及现有文件。
 
 ```sh
 npm ci
