@@ -4,7 +4,7 @@ import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import { Pool } from 'pg';
 import { AccountService, argon2Passwords } from '@tts-workbench/account-core';
 import { PostgresAccountRepository } from '@tts-workbench/account-postgres';
-import type { Person, Interaction, PersonReflection, ReflectionInteraction } from '@zhijiao/shared';
+import type { Person, Interaction, PersonReflection, ReflectionInteraction, Topic, TopicThought } from '@zhijiao/shared';
 import { VaultClient } from '../../packages/client/src/client.js';
 import { HttpVaultTransport } from '../../packages/client/src/transport.js';
 import { MemoryStore } from '../../packages/client/src/storage.js';
@@ -45,6 +45,40 @@ suite('real client encryption over authenticated HTTP and PostgreSQL', () => {
   });
   afterAll(async () => { await server?.close(); await pool?.end(); });
   const base = () => ({ id:randomUUID(), ownerId, createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() });
+  it('round-trips topics, multi-source thoughts, legacy reflections and revision history as ciphertext', async () => {
+    const first=new VaultClient({transport,store:new MemoryStore(),ownerId,autoSync:false});
+    const second=new VaultClient({transport,store:new MemoryStore(),ownerId,autoSync:false});
+    const clean=new VaultClient({transport,store:new MemoryStore(),ownerId,autoSync:false});
+    try {
+      const {vault,recoverySecret}=await first.setup(phrase);await first.sync();
+      const subject:Topic={...base(),kind:'topic',name:'虚构议题：原则的适用范围',description:'合成集成测试'};
+      const speaker:Person={...base(),kind:'person',displayName:'虚构表达者',status:'active'};
+      const a:Interaction={...base(),kind:'interaction',title:'虚构第一次交往',content:'合成来源一',participantIds:[speaker.id],occurredOn:'2025-02-01'};
+      const b:Interaction={...base(),kind:'interaction',title:'虚构无人交往',content:'合成来源二',participantIds:[]};
+      const view:TopicThought={...base(),kind:'thought',topicId:subject.id,title:'虚构初步思考',content:'原则应明确适用范围，不推定表达者的人格。',type:'hypothesis',status:'current',recordedOn:'2026-10-31',quote:{text:'虚构转述',kind:'paraphrase',speakerPersonId:speaker.id,sourceInteractionId:a.id}};
+      const old:PersonReflection={...base(),kind:'reflection',personId:speaker.id,type:'feeling',content:'明确关于人物的旧感受',evidence:'保留旧依据',status:'current'};
+      const source=(interactionId:string):ReflectionInteraction=>({...base(),kind:'reflectionLink',reflectionId:view.id,targetKind:'thought',interactionId,relationType:'arose'});
+      const one=source(a.id),two=source(b.id);
+      const legacyLink:ReflectionInteraction={...base(),kind:'reflectionLink',reflectionId:old.id,interactionId:a.id,relationType:'supports'};
+      await first.saveBatch([subject,speaker,a,b,view,old,one,two,legacyLink]);await first.sync();
+      const persisted=await pool.query('SELECT ciphertext FROM zj_versions WHERE vault_id=$1',[vault.id]);
+      expect(persisted.rows.every(row=>!(row.ciphertext as Buffer).includes(Buffer.from('虚构')))).toBe(true);
+      await second.open(vault.id);await second.unlock(phrase);await second.sync();
+      expect(second.entities.find(e=>e.id===view.id)).toEqual(view);expect(second.entities.find(e=>e.id===old.id)).toEqual(old);
+      expect(second.entities.filter(e=>e.kind==='reflectionLink'&&e.reflectionId===view.id)).toHaveLength(2);
+      await first.put({...subject,name:'虚构重命名议题'});await first.mutateBatch([{...view,content:'仅修正措辞'}],[one.id]);await first.sync();await second.sync();
+      expect(second.entities.find(e=>e.id===view.id)).toMatchObject({topicId:subject.id,content:'仅修正措辞'});
+      expect(second.entities.filter(e=>e.kind==='reflectionLink'&&e.reflectionId===view.id).map(e=>e.id)).toEqual([two.id]);
+      const next:TopicThought={...view,...base(),title:'虚构新的理解',content:'新增理解，保留前一条。',supersedesId:view.id};await first.put(next);await first.sync();
+      await expect(first.delete(subject.id)).rejects.toThrow('TOPIC_HAS_THOUGHTS');
+      await second.restore(view.id,'1');await second.sync();
+      expect((await second.history(view.id)).map(entry=>entry.revision)).toEqual(['1','2','3']);
+      const backup=await second.exportBackup();expect(backup).not.toContain(next.content);
+      const preview=await clean.previewBackup(backup,recoverySecret,{recovery:true});await clean.importBackup(preview,{confirm:true});await clean.unlock(phrase);
+      expect(clean.entities.find(e=>e.id===next.id)).toEqual(next);expect(clean.entities.find(e=>e.id===legacyLink.id)).toEqual(legacyLink);
+      expect(clean.entities.find(e=>e.id===b.id)).toMatchObject({participantIds:[]});
+    } finally {first.lock();second.lock();clean.lock();}
+  },30000);
   it('syncs directory first, resolves offline CAS explicitly, restores history and keeps group relationships', async () => {
     const first = new VaultClient({ transport, store:new MemoryStore(), ownerId, autoSync:false });
     const { vault, recoverySecret } = await first.setup(phrase); await first.sync();

@@ -15,7 +15,7 @@ const reflections = ref<ReflectionDraft[]>([]); const taskOpen = ref(false); con
 const needsPeople = computed(() => taskOpen.value || reflections.value.length > 0);
 const names = computed(() => selected.value.map(id => ({ id, name: directory.value.find(person => person.personId === id)?.displayName ?? drafts.value.find(person => person.id === id)?.displayName ?? '尚未同步人物' })));
 const availableReflections = computed(() => entities.value.filter((entity): entity is PersonReflection => entity.kind === 'reflection' && selected.value.includes(entity.personId)));
-function addReflection() { reflections.value.push({ id: crypto.randomUUID(), personId: selected.value.length === 1 ? selected.value[0] : '', mode: 'new', existingId: '', type: 'feeling', content: '', relation: 'arose', explanation: '' }); }
+function addReflection() { reflections.value.push({ id: crypto.randomUUID(), personId: '', mode: 'new', existingId: '', type: 'feeling', content: '', relation: 'arose', explanation: '' }); }
 function choose(ids: string[], people: Person[]) { selected.value = ids; drafts.value = people; picker.value = false; }
 function reflectionPersonRule(): FormRule { return value => selected.value.includes(String(value)) || '请选择这条感受针对的参与人物。'; }
 function existingReflectionRule(item: ReflectionDraft): FormRule { return value => availableReflections.value.some(record => record.id === value && record.personId === item.personId) || '请选择此人物的已有感受或印象。'; }
