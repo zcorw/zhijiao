@@ -3,7 +3,7 @@ import { pinyin } from 'pinyin-pro';
 import { decimal, envelopeSchema, operationSchema, opaqueId, type AvatarRef, type ChangePage, type CipherEnvelope, type DirectoryEntry, type Entity, type Operation, type Person, type VaultDescriptor } from '@zhijiao/shared';
 import { createKeyBundle, decryptBytes, decryptEnvelope, directoryId, encryptBytes, encryptEnvelope, keyBundleSchema, rewrapKeyBundle, unwrapKeyBundle, unwrapPreviousKeys, type KeyBundle } from './crypto.js';
 import { AvatarCache, assetKeyAad, encryptAvatarAsset, prepareAvatar, type AvatarCrop, type PreparedAvatar } from './avatar.js';
-import { personDirectory, planPersonDeletion, references, validateEntity } from './entities.js';
+import { personDirectory, planPersonDeletion, references, validateEntity, validateReflectionSubject, preservesLegacyReflectionChain } from './entities.js';
 import { ApiError, type VaultTransport } from './transport.js';
 import { currentEnvelopes, emptyVault, IndexedDbStore, mergeEnvelopes, type StoredVault, type VaultStore } from './storage.js';
 import { exportEncryptedBackup, previewEncryptedBackup, getPreviewData, type BackupPreview } from './backup.js';
@@ -15,6 +15,11 @@ export interface ConflictView {operationId:string;code:'REVISION_CONFLICT'|'KEY_
 const pageSchema=z.strictObject({envelopes:z.array(envelopeSchema).max(1000),after:decimal,highWatermark:decimal,hasMore:z.boolean()});
 const descriptorSchema=z.object({id:opaqueId,ownerId:opaqueId,keyBundle:keyBundleSchema,keyBundleRevision:decimal,keyBundleHistory:z.array(keyBundleSchema).optional()});
 const normalize=(value:string)=>value.normalize('NFKC').toLowerCase().replace(/[\s'’_-]+/g,'');
+const reflectionSubject=(entity:Entity|undefined)=>entity?.kind==='thought'?entity.topicId:entity?.kind==='reflection'?entity.personId:undefined;
+function validateIncomingReflectionSubjects(entity:Entity,known:ReadonlyMap<string,Entity>,deleteIds:string[]=[],baseline:ReadonlyMap<string,Entity>=known):void {
+  if(entity.kind!=='reflection'&&entity.kind!=='thought')return;
+  for(const candidate of known.values())if(candidate.kind===entity.kind&&candidate.supersedesId===entity.id&&!deleteIds.includes(candidate.id)&&!preservesLegacyReflectionChain(candidate,baseline,known))validateReflectionSubject(candidate,known);
+}
 export class VaultClient {
   readonly store:VaultStore;
   private descriptor?:VaultDescriptor;
@@ -145,33 +150,44 @@ export class VaultClient {
           if(!this.stateValue.recordsComplete)throw new Error('FULL_SYNC_REQUIRED_TO_DELETE_PERSON');const plan=planPersonDeletion(id,[...working.values()]);
           for(const e of plan.updates){working.set(e.id,e);updates.set(e.id,e);}for(const deleted of plan.deleteIds){deletes.add(deleted);working.delete(deleted);updates.delete(deleted);}
         }
-        if(entity.kind==='interaction'||entity.kind==='reflection')for(const e of working.values())if(e.kind==='reflectionLink'&&(e.interactionId===id || e.reflectionId===id)){deletes.add(e.id);updates.delete(e.id);working.delete(e.id);}
-        if(entity.kind==='tag')for(const e of working.values())if(e.kind==='personTag'&&e.tagId===id){deletes.add(e.id);updates.delete(e.id);working.delete(e.id);}
+        if(entity.kind==='topic') {
+          if(!this.stateValue.recordsComplete)throw new Error('FULL_SYNC_REQUIRED_TO_DELETE_TOPIC');
+          if([...working.values()].some(e=>e.kind==='thought'&&e.topicId===id&&!deletes.has(e.id)))throw new Error('TOPIC_HAS_THOUGHTS');
+        }
+        if((entity.kind==='reflection'||entity.kind==='thought')&&[...working.values()].some(e=>e.kind===entity.kind&&e.supersedesId===id&&!deletes.has(e.id)))throw new Error('REFLECTION_HAS_SUCCESSORS');
+        if(entity.kind==='interaction'||entity.kind==='reflection'||entity.kind==='thought')for(const e of working.values())if(e.kind==='reflectionLink'&&(e.interactionId===id || e.reflectionId===id)){deletes.add(e.id);updates.delete(e.id);working.delete(e.id);}
+        if(entity.kind==='tag')for(const e of working.values()) {
+          if(e.kind==='personTag'&&e.tagId===id){deletes.add(e.id);updates.delete(e.id);working.delete(e.id);}
+          if((e.kind==='reflection'||e.kind==='thought')&&e.tagIds?.includes(id)&&!deletes.has(e.id)) {
+            const next={...e,tagIds:e.tagIds.filter(tagId=>tagId!==id),updatedAt:new Date().toISOString()};updates.set(e.id,next);working.set(e.id,next);
+          }
+        }
+        if(entity.kind==='interaction')for(const e of working.values())if((e.kind==='reflection'||e.kind==='thought')&&e.quote?.sourceInteractionId===id&&!deletes.has(e.id)) {
+          const {sourceInteractionId:_sourceInteractionId,...quote}=e.quote;
+          const next={...e,quote,updatedAt:new Date().toISOString()};updates.set(e.id,next);working.set(e.id,next);
+        }
       }
+      for(const id of deletes)updates.delete(id);
       return this.write([...updates.values()],[...deletes],[],lease);
     });
   }
-  delete(id:string):Promise<Operation>{
-    const lease=this.lease();return this.queue(async()=>{
-      this.check(lease.generation);const entity=this.plain.get(id);if(!entity)throw new Error('ENTITY_NOT_FOUND');
-      if(entity.kind==='person'){
-        if(!this.stateValue.recordsComplete)throw new Error('FULL_SYNC_REQUIRED_TO_DELETE_PERSON');
-        const plan=planPersonDeletion(id,[...this.plain.values()]);return this.write(plan.updates,plan.deleteIds,[],lease);
-      }
-      const deleteIds=[id];if(entity.kind==='reflection' || entity.kind==='interaction')for(const e of this.plain.values())if(e.kind==='reflectionLink' && (e.reflectionId===id || e.interactionId===id))deleteIds.push(e.id);
-      if(entity.kind==='tag')for(const e of this.plain.values())if(e.kind==='personTag'&&e.tagId===id)deleteIds.push(e.id);
-      return this.write([],deleteIds,[],lease);
-    });
-  }
+  delete(id:string):Promise<Operation>{return this.mutateBatch([],[id]);}
   private async write(inputs:Entity[],deleteIds:string[],extra:CipherEnvelope[],lease:ReturnType<VaultClient['lease']>):Promise<Operation>{
     this.check(lease.generation);const stored=await this.store.read(lease.vaultId);this.check(lease.generation);if(!stored)throw new Error('LOCAL_VAULT_MISSING');
     const current=currentEnvelopes(stored);const entities=inputs.map(validateEntity);
     if(entities.some(e=>e.kind==='directory'))throw new Error('DIRECTORY_IS_DERIVED');
     if(new Set([...entities.map(e=>e.id),...deleteIds]).size!==entities.length+deleteIds.length)throw new Error('DUPLICATE_MUTATION');
     const known=new Map(this.plain);for(const e of entities){if(e.ownerId!==this.descriptor!.ownerId)throw new Error('ENTITY_OWNER_MISMATCH');known.set(e.id,e);}
+    const legacyChains=new Set(entities.filter(e=>preservesLegacyReflectionChain(e,this.plain,known)).map(e=>e.id));
     for(const e of entities)for(const ref of references(e)){
+      if(legacyChains.has(e.id)&&e.kind==='reflection'&&ref.kind==='reflection'&&ref.id===e.supersedesId&&!deleteIds.includes(ref.id))continue;
       const target=known.get(ref.id);const personKnown=ref.kind==='person'&&this.directoryEntries.some(p=>p.personId===ref.id);
       if(target?.kind!==ref.kind&&!personKnown)throw new Error('REFERENCE_NOT_FOUND');if(deleteIds.includes(ref.id))throw new Error('REFERENCE_TO_DELETED_ENTITY');
+    }
+    for(const e of entities) {
+      if(!legacyChains.has(e.id))validateReflectionSubject(e,known);
+      const previous=this.plain.get(e.id);
+      if(previous&&reflectionSubject(previous)!==reflectionSubject(e))validateIncomingReflectionSubjects(e,known,deleteIds,this.plain);
     }
     for(const e of entities.filter((e):e is Person=>e.kind==='person'))entities.push(await personDirectory(e));
     const expandedDeletes=new Set(deleteIds);for(const id of deleteIds)if(this.plain.get(id)?.kind==='person')expandedDeletes.add(await directoryId(id));
@@ -318,10 +334,16 @@ export class VaultClient {
   private async restoreWrite(entity:Entity,lease:ReturnType<VaultClient['lease']>):Promise<Operation>{
     const stored=await this.store.read(lease.vaultId);this.check(lease.generation);const current=currentEnvelopes(stored!),keyVersion=keyBundleSchema.parse(this.descriptor!.keyBundle).keyVersion;
     if(entity.kind==='directory')throw new Error('DIRECTORY_IS_DERIVED');
+    const restorationKnown=new Map(this.plain).set(entity.id,entity);
+    // The source is an authenticated history entry selected through restore(), never a new supplied link.
+    const legacyChain=preservesLegacyReflectionChain(entity,restorationKnown,restorationKnown);
     for(const ref of references(entity)){
+      if(legacyChain&&entity.kind==='reflection'&&ref.kind==='reflection'&&ref.id===entity.supersedesId)continue;
       const target=this.plain.get(ref.id),personKnown=ref.kind==='person'&&this.directoryEntries.some(p=>p.personId===ref.id);
       if(target?.kind!==ref.kind&&!personKnown)throw new Error('REFERENCE_NOT_FOUND_RESTORE_DEPENDENCIES_FIRST');
     }
+    if(!legacyChain)validateReflectionSubject(entity,restorationKnown);
+    validateIncomingReflectionSubjects(entity,restorationKnown,[],this.plain);
     const restored={...entity,updatedAt:new Date().toISOString()};if(restored.kind==='person'&&restored.avatar)restored.avatar=await this.rewrapAvatar(restored.avatar,keyVersion,lease);
     const entities:Entity[]=[restored];if(entity.kind==='person')entities.push(await personDirectory(entities[0] as Person));
     const mutations:Operation['mutations']=[];for(const e of entities){const expectedRevision=current.get(e.id)?.revision??'0';const envelope=await encryptEnvelope(this.key(keyVersion),{vaultId:lease.vaultId,recordId:e.id,revision:(BigInt(expectedRevision)+1n).toString(),keyVersion,formatVersion:1,lane:e.kind==='directory'?'directory':'records',tombstone:false},e);this.check(lease.generation);mutations.push({expectedRevision,envelope});}
