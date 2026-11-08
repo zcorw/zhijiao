@@ -71,6 +71,7 @@ test.describe('all editable dates on desktop', () => {
     await expect(form.locator('[name="exactTime"]')).toHaveValue('2024-02-29T10:30'); await screenshot(page, 'all-date-desktop');
     await picker.getByRole('button', {name:'确定日期'}).click(); await form.locator('[name="timezone"]').fill('America/Los_Angeles');
     await form.locator('section').filter({has:page.getByRole('heading', {name:'我的感受与印象',exact:true})}).getByRole('button', {name:'添加',exact:true}).click();
+    await form.getByRole('combobox', {name:'针对谁',exact:true}).selectOption({label:name});
     await form.getByLabel('我的想法').fill(reflection); await form.getByRole('button', {name:'添加事项',exact:true}).click();
     await form.locator('[name="taskTitle"]').fill(task); await partial(page, form, 'dueDate', '期限日期（可不填）', '2025-05-12', '年', '2025');
     await form.getByRole('button', {name:'保存这一笔',exact:true}).dblclick(); await expect(form).not.toBeVisible();
