@@ -2,7 +2,7 @@
 import { ref, computed } from 'vue';
 import type { Entity, Person, PersonTag, ReflectionInteraction, Tag, Topic } from '@zhijiao/shared';
 import { partialDateSchema } from '@zhijiao/shared';
-import { base, entities, directory, vaultState } from '../state';
+import { base, entities, directory, selfPersonId, vaultState } from '../state';
 import { label, titleOf, localDate, interactionTitle } from '../format';
 import ValidatedForm from './ValidatedForm.vue'; import FormField from './FormField.vue';
 import DateTimeInput from './DateTimeInput.vue';
@@ -14,6 +14,7 @@ interface Field { name: string; label: string; type?: 'textarea' | 'select' | 'p
 const props = defineProps<{ kind: EditableKind; entity?: Entity; personId?: string; topicId?: string; interactionId?: string; supersedesId?: string; busy?: boolean; failure?: string }>();
 const emit = defineEmits<{ save: [records: Entity[], remove: string[]]; close: [] }>();
 const isReflection = props.kind === 'reflection' || props.kind === 'thought';
+const isSelf = computed(() => props.kind === 'person' && !!props.entity && props.entity.id === selfPersonId.value);
 const defaultValues: Record<EditableKind, Record<string, unknown>> = { person: { status: 'active', aliases: '' }, contact: { type: '电话', status: 'active' }, fact: { basis: 'self-reported', status: 'current' }, interaction: { participantIds: props.personId ? [props.personId] : [], content: '' }, reflection: { type: 'feeling', status: 'current', recordedOn: localDate(), supersedesId: props.supersedesId }, thought: { topicId: props.topicId, type: 'hypothesis', status: 'current', recordedOn: localDate(), supersedesId: props.supersedesId }, topic: {}, followUp: { type: 'plan', responsibility: 'me', status: 'pending', personIds: props.personId ? [props.personId] : [] }, tag: {} };
 const draft = ref<Record<string, unknown>>({ ...defaultValues[props.kind], ...props.entity, ...(['contact', 'fact', 'reflection'].includes(props.kind) && props.personId ? { personId: props.personId } : {}) });
 if (Array.isArray(draft.value.aliases)) draft.value.aliases = (draft.value.aliases as string[]).join('，');
@@ -38,6 +39,10 @@ const fields: Record<EditableKind, Field[]> = {
  topic: [{ name: 'name', label: '议题名称', required: true, placeholder: '想持续思考的问题' }, { name: 'description', label: '议题说明', type: 'textarea' }],
  followUp: [{ name: 'title', label: '事项标题', required: true }, { name: 'type', label: '事项类型', type: 'select', options: ['promise', 'plan'] }, { name: 'responsibility', label: '由谁负责', type: 'select', options: ['me', 'other', 'joint'], required: true }, { name: 'details', label: '约定与完成标准', type: 'textarea' }, { name: 'sourceInteractionId', label: '来源交往', type: 'reference', referenceKind: 'interaction' }, { name: 'dueDate', label: '期限日期', type: 'partial' }, { name: 'dueAt', label: '精确截止时间', type: 'datetime' }, { name: 'timezone', label: '时间所属时区' }, { name: 'status', label: '状态', type: 'select', options: ['pending', 'completed', 'cancelled'] }], tag: [{ name: 'name', label: '标签名称', required: true }, { name: 'color', label: '颜色（可不填）', placeholder: '#547353' }]
 };
+const visibleFields = computed(() => isSelf.value
+ ? fields.person.filter(field => !['displayName', 'status', 'metContext', 'metOn'].includes(field.name))
+   .map(field => field.name === 'summary' ? { ...field, placeholder: '简单介绍一下自己' } : field)
+ : fields[props.kind]);
 const error = ref(''); const picker = ref(false); const peopleDrafts = ref<Person[]>([]);
 const selectionField = props.kind === 'interaction' ? 'participantIds' : props.kind === 'followUp' ? 'personIds' : 'personId';
 const usesPeople = !['person', 'tag', 'topic', 'thought'].includes(props.kind); const multiple = props.kind === 'interaction' || props.kind === 'followUp'; const needsPeople = usesPeople && props.kind !== 'interaction';
@@ -159,7 +164,7 @@ function submit() {
       </div>
       <p class="muted">记录我对问题的认识。形成时间与来源交往的发生时间分别保存。</p>
     </section>
-    <template v-for="field in fields[kind]" :key="field.name">
+    <template v-for="field in visibleFields" :key="field.name">
       <FormField v-if="field.type === 'partial' || field.type === 'datetime'" :name="field.name" :label="field.label" :model-value="draft[field.name]" :rules="fieldRule(field)" :required="field.required" type="custom" :hint="field.type === 'partial' ? '按已知精度记录，可留空；只知月日可输入 --MM-DD。' : field.name === 'recordedAt' ? '24 小时制，按本机时区输入并保存为精确时刻。' : '24 小时制，按本机时区输入；需填写时间所属时区。'">
         <template #default="{ attrs, blur }"><DateTimeInput :model-value="String(draft[field.name] ?? '')" :input-attrs="attrs" :label="field.label" :mode="field.type === 'datetime' ? 'datetime' : 'partial'" :disabled="busy" @update:model-value="draft[field.name] = $event" @blur="blur" /></template>
       </FormField>

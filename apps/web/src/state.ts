@@ -7,6 +7,7 @@ const tick = shallowRef(0);
 export const vaultState = computed(() => { void tick.value; return client.value?.state; });
 export const entities = computed(() => { void tick.value; return client.value?.entities ?? []; });
 export const directory = computed(() => { void tick.value; return client.value?.directoryEntries ?? []; });
+export const selfPersonId = computed(() => { void tick.value; return client.value?.selfPersonId; });
 let unsubscribe: (() => void) | undefined;
 export let generation = 0;
 export function connectVault(ownerId?: string) {
