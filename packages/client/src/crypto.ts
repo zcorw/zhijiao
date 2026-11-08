@@ -107,8 +107,14 @@ export async function decryptEnvelope(key: CryptoKey, input: CipherEnvelope): Pr
   try { return parseBytes(bytes); } finally { bytes.fill(0); }
 }
 export async function sha256(value: unknown): Promise<string> { return base64(new Uint8Array(await crypto.subtle.digest('SHA-256',buffer(jsonBytes(value))))); }
-export async function directoryId(personId: string): Promise<string> {
-  const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256',buffer(encoder.encode(`zhijiao-directory:${personId}`))));
+export function directoryId(personId: string): Promise<string> {
+  return scopedRecordId(`zhijiao-directory:${personId}`);
+}
+export function ownerPersonId(vaultId: string): Promise<string> {
+  return scopedRecordId(`zhijiao-self:${vaultId}`);
+}
+async function scopedRecordId(value: string): Promise<string> {
+  const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256',buffer(encoder.encode(value))));
   bytes[6] = (bytes[6]! & 15) | 80; bytes[8] = (bytes[8]! & 63) | 128;
   const h = Array.from(bytes.subarray(0,16), v => v.toString(16).padStart(2,'0')).join('');
   return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;

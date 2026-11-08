@@ -70,6 +70,41 @@ describe('client cryptographic boundary',()=>{
   });
 });
 describe('encrypted storage and sync',()=>{
+  it('provides one stable owner profile across devices and stores changes only when edited',async()=>{
+    const {engine,server,store}=await client();
+    const self=engine.entities.find((entity):entity is Person=>entity.kind==='person'&&entity.id===engine.selfPersonId)!;
+    expect(self).toMatchObject({displayName:'我',ownerId,status:'active'});
+    expect(engine.searchPeople('我').entries.map(entry=>entry.personId)).toEqual([self.id]);
+    expect(server.all).toHaveLength(0);
+    const {engine:other}=await device(server);
+    expect(other.selfPersonId).toBe(self.id);
+    const {engine:separate}=await client();
+    expect(separate.selfPersonId).not.toBe(self.id);
+
+    const interaction:Interaction={id:crypto.randomUUID(),ownerId,createdAt:self.createdAt,updatedAt:self.updatedAt,kind:'interaction',title:'虚构个人记录',content:'',participantIds:[self.id]};
+    const namesake=person('我');
+    await other.saveBatch([interaction,namesake]);await other.sync();
+    await engine.sync();
+    expect(engine.entities.find(entity=>entity.id===interaction.id)).toEqual(interaction);
+    expect(new Set(engine.searchPeople('我').entries.map(entry=>entry.personId))).toEqual(new Set([namesake.id,self.id]));
+    expect(engine.searchPeople('').entries[0]!.personId).toBe(self.id);
+    expect(server.all.filter(item=>item.envelope.recordId===self.id)).toHaveLength(0);
+
+    const edited={...self,summary:'虚构的自我介绍',updatedAt:new Date().toISOString()};
+    await engine.put(edited);await engine.sync();
+    await other.sync();
+    expect(other.entities.find(entity=>entity.id===self.id)).toMatchObject({summary:edited.summary,createdAt:edited.updatedAt});
+    await expect(other.put({...self,summary:'同步前打开的表单'})).rejects.toThrow('LOCAL_REVISION_CONFLICT');
+    await expect(other.put({...edited,status:'archived'})).rejects.toThrow('INVALID_SELF_PERSON');
+    await expect(other.delete(self.id)).rejects.toThrow('CANNOT_DELETE_SELF_PERSON');
+
+    engine.lock();
+    expect(engine.selfPersonId).toBeUndefined();
+    const cached=new VaultClient({transport:server,store,ownerId,autoSync:false});clients.push(cached);
+    await cached.openCached(server.descriptor!.id);await cached.unlock(password);
+    expect(cached.selfPersonId).toBe(self.id);
+    expect(cached.entities.find(entity=>entity.id===self.id)).toMatchObject({summary:edited.summary});
+  });
   it('accepts complete interactions without participants while retaining participant and task validation',()=>{
     const entry:Interaction={id:crypto.randomUUID(),ownerId,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),kind:'interaction',title:'Fictional quiet afternoon',participantIds:[],content:'Fictional feeling recorded without a person.'};
     expect(validateEntity(entry)).toEqual(entry);expect(references(entry)).toEqual([]);
@@ -81,13 +116,13 @@ describe('encrypted storage and sync',()=>{
     Object.assign(globalThis,{indexedDB});const databaseName=`test-optional-participants-${crypto.randomUUID()}`,store=new IndexedDbStore(databaseName),server=new Server();
     const initial=new VaultClient({transport:server,store,ownerId,autoSync:false});clients.push(initial);await initial.setup(password);await initial.sync();const vaultId=initial.vault!.id;
     const now=new Date().toISOString(),entry:Interaction={id:crypto.randomUUID(),ownerId,createdAt:now,updatedAt:now,kind:'interaction',title:'Fictional train encounter',participantIds:[],occurredOn:'2026-10-12',content:'A fictional event worth keeping without creating a person.'};
-    server.offline=true;await initial.put(entry);expect(initial.entities).toEqual([entry]);expect(initial.directoryEntries).toEqual([]);expect(initial.state.pending).toBe(1);
+    server.offline=true;await initial.put(entry);expect(initial.entities.filter(entity=>entity.id!==initial.selfPersonId)).toEqual([entry]);expect(initial.directoryEntries.map(entity=>entity.personId)).toEqual([initial.selfPersonId]);expect(initial.state.pending).toBe(1);
     const persisted=JSON.stringify(await store.read(vaultId));expect(persisted).not.toContain(entry.title);expect(persisted).not.toContain(entry.content);initial.lock();
-    const reloadedStore=new IndexedDbStore(databaseName),reloaded=new VaultClient({transport:server,store:reloadedStore,ownerId,autoSync:false});clients.push(reloaded);await reloaded.openCached(vaultId);await reloaded.unlock(password);expect(reloaded.entities).toEqual([entry]);
+    const reloadedStore=new IndexedDbStore(databaseName),reloaded=new VaultClient({transport:server,store:reloadedStore,ownerId,autoSync:false});clients.push(reloaded);await reloaded.openCached(vaultId);await reloaded.unlock(password);expect(reloaded.entities.filter(entity=>entity.id!==reloaded.selfPersonId)).toEqual([entry]);
     const edited={...entry,title:'Fictional train reflection',content:'A fictional revised feeling.',occurredOn:'2026-10-13',updatedAt:new Date().toISOString()};await reloaded.put(edited);expect(reloaded.state.pending).toBe(2);server.offline=false;await reloaded.resumeOnline();expect(reloaded.state.pending).toBe(0);
     const originalCiphertext=structuredClone(server.all.find(item=>item.envelope.recordId===entry.id)!.envelope),friend=person('Fictional friend'),existing:Interaction={...entry,id:crypto.randomUUID(),title:'Fictional linked conversation',participantIds:[friend.id]};await reloaded.saveBatch([friend,existing]);await reloaded.sync();
     const associated={...edited,participantIds:[friend.id],updatedAt:new Date().toISOString()};await reloaded.put(associated);await reloaded.sync();expect((reloaded.entities.find(entity=>entity.id===entry.id) as Interaction).participantIds).toEqual([friend.id]);
-    const detached={...associated,participantIds:[],updatedAt:new Date().toISOString()};await reloaded.put(detached);await reloaded.sync();expect(reloaded.entities.find(entity=>entity.id===entry.id)).toEqual(detached);expect(reloaded.entities.find(entity=>entity.id===existing.id)).toEqual(existing);expect(reloaded.directoryEntries.map(entity=>entity.personId)).toEqual([friend.id]);
+    const detached={...associated,participantIds:[],updatedAt:new Date().toISOString()};await reloaded.put(detached);await reloaded.sync();expect(reloaded.entities.find(entity=>entity.id===entry.id)).toEqual(detached);expect(reloaded.entities.find(entity=>entity.id===existing.id)).toEqual(existing);expect(new Set(reloaded.directoryEntries.map(entity=>entity.personId))).toEqual(new Set([friend.id,reloaded.selfPersonId]));
     expect(server.all.find(item=>item.envelope.recordId===entry.id)!.envelope).toEqual(originalCiphertext);const history=await reloaded.history(entry.id);expect(history.map(version=>version.revision)).toEqual(['1','2','3','4']);expect(history.every(version=>!version.tombstone)).toBe(true);expect(history.map(version=>(version.entity as Interaction).participantIds)).toEqual([[],[],[friend.id],[]]);expect(history[0]!.entity).toEqual(entry);
     const {engine:other}=await device(server);expect(other.entities.find(entity=>entity.id===entry.id)).toEqual(detached);expect(other.entities.find(entity=>entity.id===existing.id)).toEqual(existing);
     await other.restore(entry.id,'3');await other.sync();expect((other.entities.find(entity=>entity.id===entry.id) as Interaction).participantIds).toEqual([friend.id]);await other.restore(entry.id,'4');await other.sync();expect((other.entities.find(entity=>entity.id===entry.id) as Interaction).participantIds).toEqual([]);expect((await other.history(entry.id)).map(version=>version.revision)).toEqual(['1','2','3','4','5','6']);
@@ -114,7 +149,7 @@ describe('encrypted storage and sync',()=>{
   it('preserves both conflict candidates, never revives a tombstone, and requires explicit restore',async()=>{
     const {engine:a,server}=await client();const entry=person();await a.put(entry);await a.sync();const {engine:b}=await device(server);await a.put({...entry,displayName:'远端修订'});await b.put({...entry,displayName:'本机离线修订'});await a.sync();await b.sync();
     expect(b.state.conflicts).toBe(1);const conflicts=await b.conflicts();expect(conflicts[0]!.local.some(e=>'displayName'in e&&e.displayName==='本机离线修订')).toBe(true);expect(conflicts[0]!.remote.some(e=>'displayName'in e&&e.displayName==='远端修订')).toBe(true);
-    await b.discardConflict(conflicts[0]!.operationId);expect(b.entities[0]!.kind==='person'&&b.entities[0].displayName).toBe('远端修订');await a.delete(entry.id);await a.sync();await b.sync();expect(b.entities).toHaveLength(0);await expect(b.put(entry)).rejects.toThrow('EXPLICIT_RESTORE_REQUIRED');
+    await b.discardConflict(conflicts[0]!.operationId);expect(b.entities[0]!.kind==='person'&&b.entities[0].displayName).toBe('远端修订');await a.delete(entry.id);await a.sync();await b.sync();expect(b.entities.map(entity=>entity.id)).toEqual([b.selfPersonId]);await expect(b.put(entry)).rejects.toThrow('EXPLICIT_RESTORE_REQUIRED');
     await b.restore(entry.id,'1');await b.sync();expect(b.entities[0]!.kind==='person'&&b.entities[0].displayName).toBe(entry.displayName);expect((await b.history(entry.id)).map(e=>e.revision)).toEqual(['1','2','3','4']);
   });
   it('cancels late download on lock and cannot write back plaintext or advance cursor',async()=>{
@@ -143,7 +178,7 @@ describe('encrypted storage and sync',()=>{
     await expect(engine.restore(interaction.id,'1')).rejects.toThrow('REFERENCE_NOT_FOUND_RESTORE_DEPENDENCIES_FIRST');await engine.restore(a.id,'1');await engine.sync();await engine.restore(interaction.id,'1');await engine.sync();expect((engine.entities.find(e=>e.id===interaction.id) as typeof interaction).participantIds).toEqual([a.id,b.id]);
   });
   it('atomically deletes all participants and dependent records without creating empty interactions or tasks',async()=>{
-    const {engine}=await client();const a=person(),b=person('虚构友人');const base={ownerId,createdAt:a.createdAt,updatedAt:a.updatedAt};const interaction={...base,id:crypto.randomUUID(),kind:'interaction' as const,title:'虚构多人',participantIds:[a.id,b.id],content:''},task={...base,id:crypto.randomUUID(),kind:'followUp' as const,title:'虚构事项',personIds:[a.id,b.id],type:'plan' as const,responsibility:'joint' as const,status:'pending' as const};await engine.saveBatch([a,b,interaction,task]);await engine.sync();await engine.mutateBatch([],[a.id,b.id]);await engine.sync();expect(engine.entities).toHaveLength(0);expect((await engine.history(task.id)).at(-1)!.tombstone).toBe(true);
+    const {engine}=await client();const a=person(),b=person('虚构友人');const base={ownerId,createdAt:a.createdAt,updatedAt:a.updatedAt};const interaction={...base,id:crypto.randomUUID(),kind:'interaction' as const,title:'虚构多人',participantIds:[a.id,b.id],content:''},task={...base,id:crypto.randomUUID(),kind:'followUp' as const,title:'虚构事项',personIds:[a.id,b.id],type:'plan' as const,responsibility:'joint' as const,status:'pending' as const};await engine.saveBatch([a,b,interaction,task]);await engine.sync();await engine.mutateBatch([],[a.id,b.id]);await engine.sync();expect(engine.entities.map(entity=>entity.id)).toEqual([engine.selfPersonId]);expect((await engine.history(task.id)).at(-1)!.tombstone).toBe(true);
   });
   it('lists the latest pre-deletion business version locally without directory duplicates or plaintext persistence',async()=>{
     const {engine,store,server}=await client();const entry=person(),living=person('仍在记录的虚构友人');await engine.saveBatch([entry,living]);await engine.sync();await engine.put({...entry,displayName:'删除前最后称呼'});await engine.sync();await engine.delete(entry.id);
@@ -198,7 +233,7 @@ describe('self-contained encrypted backup and assets',()=>{
     const {engine:a,server}=await client();const people=Array.from({length:50},(_,i)=>person(`虚构朋友${i}`));await a.saveBatch(people);await a.sync();const {engine:stale}=await device(server);await stale.put({...people[0]!,displayName:'旧设备离线候选'});
     const original=server.commit.bind(server);let interrupted=false;server.commit=async(id,operation)=>{const result=await original(id,operation);if(!interrupted&&operation.mutations[0]!.envelope.keyVersion===2){interrupted=true;a.lock();}return result;};
     await expect(a.rotateDataKey('interrupted fictional new phrase')).rejects.toThrow('VAULT_LOCKED_OPERATION_CANCELLED');
-    const fresh=new VaultClient({transport:server,store:new MemoryStore(),ownerId,autoSync:false});clients.push(fresh);await fresh.open(server.descriptor!.id);await fresh.unlock('interrupted fictional new phrase');await fresh.sync();expect(fresh.entities).toHaveLength(50);await fresh.resumeRotation();const latest=new Map(server.all.map(e=>[e.envelope.recordId,e.envelope]));expect([...latest.values()].every(e=>e.lane==='assets'||e.keyVersion===2)).toBe(true);
+    const fresh=new VaultClient({transport:server,store:new MemoryStore(),ownerId,autoSync:false});clients.push(fresh);await fresh.open(server.descriptor!.id);await fresh.unlock('interrupted fictional new phrase');await fresh.sync();expect(fresh.entities.filter(entity=>entity.id!==fresh.selfPersonId)).toHaveLength(50);await fresh.resumeRotation();const latest=new Map(server.all.map(e=>[e.envelope.recordId,e.envelope]));expect([...latest.values()].every(e=>e.lane==='assets'||e.keyVersion===2)).toBe(true);
     await expect(stale.sync()).rejects.toThrow('KEY_ROTATED_REUNLOCK_REQUIRED');expect(stale.state.pending).toBe(1);stale.lock();await stale.open(server.descriptor!.id);await stale.unlock('interrupted fictional new phrase');await stale.sync();expect(stale.state.conflicts).toBe(1);expect((await stale.conflicts())[0]!.code).toBe('KEY_VERSION_CONFLICT');expect((await stale.conflicts())[0]!.local.some(e=>'displayName'in e&&e.displayName==='旧设备离线候选')).toBe(true);
   });
   it('omits orphan assets without dropping any historical referenced image version',async()=>{
@@ -210,6 +245,6 @@ describe('self-contained encrypted backup and assets',()=>{
     const {engine,server}=await client();const people=Array.from({length:50},(_,i)=>person(`虚构轮换人物${i}`));await engine.saveBatch(people);await engine.sync();const original=server.commit.bind(server);let failed=false;
     server.commit=async(id,operation)=>{const result=await original(id,operation);if(!failed&&operation.mutations[0]!.envelope.keyVersion===2){failed=true;server.offline=true;}return result;};
     const result=await engine.rotateDataKey('new fictional interrupted phrase');expect(result.completed).toBe(false);expect(result.recoverySecret.startsWith('ZJ1-')).toBe(true);expect(engine.state.lastError).toBe('OFFLINE');expect(engine.state.rotating).toBe(false);server.offline=false;await engine.resumeRotation();expect(engine.state.pending).toBe(0);
-    engine.lock();await engine.open(server.descriptor!.id);await engine.unlock(result.recoverySecret,{recovery:true});await engine.sync();expect(engine.entities).toHaveLength(50);
+    engine.lock();await engine.open(server.descriptor!.id);await engine.unlock(result.recoverySecret,{recovery:true});await engine.sync();expect(engine.entities.filter(entity=>entity.id!==engine.selfPersonId)).toHaveLength(50);
   });
 });

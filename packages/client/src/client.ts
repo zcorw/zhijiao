@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { pinyin } from 'pinyin-pro';
 import { decimal, envelopeSchema, operationSchema, opaqueId, type AvatarRef, type ChangePage, type CipherEnvelope, type DirectoryEntry, type Entity, type Operation, type Person, type VaultDescriptor } from '@zhijiao/shared';
-import { createKeyBundle, decryptBytes, decryptEnvelope, directoryId, encryptBytes, encryptEnvelope, keyBundleSchema, rewrapKeyBundle, unwrapKeyBundle, unwrapPreviousKeys, type KeyBundle } from './crypto.js';
+import { createKeyBundle, decryptBytes, decryptEnvelope, directoryId, encryptBytes, encryptEnvelope, keyBundleSchema, ownerPersonId, rewrapKeyBundle, unwrapKeyBundle, unwrapPreviousKeys, type KeyBundle } from './crypto.js';
 import { AvatarCache, assetKeyAad, encryptAvatarAsset, prepareAvatar, type AvatarCrop, type PreparedAvatar } from './avatar.js';
 import { personDirectory, planPersonDeletion, references, validateEntity } from './entities.js';
 import { ApiError, type VaultTransport } from './transport.js';
@@ -20,6 +20,7 @@ export class VaultClient {
   private descriptor?:VaultDescriptor;
   private stored?:StoredVault;
   private plain=new Map<string,Entity>();
+  private defaultPerson?:{person:Person;directory:DirectoryEntry};
   private keys=new Map<number,{raw:Uint8Array;key:CryptoKey}>();
   private generation=0;
   private abort=new AbortController();
@@ -37,6 +38,7 @@ export class VaultClient {
   }
   get state():ClientState{return {...this.stateValue};}
   get vault():VaultDescriptor|undefined{return this.descriptor?structuredClone(this.descriptor):undefined;}
+  get selfPersonId():string|undefined{return this.defaultPerson?.person.id;}
   get entities():Entity[]{return this.unlocked?structuredClone([...this.plain.values()].filter(e=>e.kind!=='directory')):[];}
   get directoryEntries():DirectoryEntry[]{return this.unlocked?structuredClone([...this.plain.values()].filter((e):e is DirectoryEntry=>e.kind==='directory')):[];}
   subscribe(listener:(state:ClientState)=>void):()=>void{this.listeners.add(listener);listener(this.state);return()=>this.listeners.delete(listener);}
@@ -85,8 +87,9 @@ export class VaultClient {
       this.check(generation);const descriptor=this.parseDescriptor(await this.options.transport.create(id,created.bundle,signal));this.check(generation);
       await this.store.update(id,old=>{if(old)throw new Error('VAULT_ALREADY_EXISTS');return emptyVault(descriptor,[created.bundle]);},signal);this.check(generation);
       this.descriptor=descriptor;this.stored=await this.store.read(id);this.check(generation);this.keys.set(created.bundle.keyVersion,{raw:created.raw,key:created.key});this.unlocked=true;
+      await this.hydrate(generation);this.check(generation);
       this.emit({directoryComplete:false,recordsComplete:false,lastError:undefined,offlineMode:false});this.scheduleSync();return {vault:structuredClone(descriptor),recoverySecret:created.recoverySecret};
-    }catch(error){created.raw.fill(0);throw error;}
+    }catch(error){created.raw.fill(0);if(generation===this.generation&&this.unlocked)this.lock();throw error;}
   }
   async unlock(secret:string,options:{recovery?:boolean}={}):Promise<void>{
     const lease=this.lease(false);if(this.unlocked)throw new Error('VAULT_ALREADY_UNLOCKED');
@@ -97,12 +100,12 @@ export class VaultClient {
       const stored=await this.store.read(lease.vaultId);this.check(lease.generation);if(!stored)throw new Error('LOCAL_VAULT_MISSING');
       previous=await unwrapPreviousKeys(opened.bundle,opened.key);this.check(lease.generation);
       for(const [version,key] of previous)this.keys.set(version,key);this.keys.set(opened.bundle.keyVersion,{raw:opened.raw,key:opened.key});this.unlocked=true;this.stored=stored;
-      await this.hydrate(lease.generation);this.emit({directoryComplete:stored.complete.directory,recordsComplete:stored.complete.records,lastError:undefined});this.scheduleSync();
+      await this.hydrate(lease.generation);this.check(lease.generation);this.emit({directoryComplete:stored.complete.directory,recordsComplete:stored.complete.records,lastError:undefined});this.scheduleSync();
     }catch(error){opened.raw.fill(0);for(const key of previous.values())key.raw.fill(0);if(lease.generation===this.generation)this.lock();throw error;}
   }
   lock():void{
     this.generation++;this.abort.abort(new Error('VAULT_LOCKED_OPERATION_CANCELLED'));this.abort=new AbortController();this.unlocked=false;
-    for(const key of this.keys.values())key.raw.fill(0);this.keys.clear();this.plain.clear();this.searchIndex.clear();this.recent=[];this.avatarCache.clear();this.syncPromise=undefined;
+    for(const key of this.keys.values())key.raw.fill(0);this.keys.clear();this.plain.clear();this.defaultPerson=undefined;this.searchIndex.clear();this.recent=[];this.avatarCache.clear();this.syncPromise=undefined;
     this.emit({syncing:false,rotating:false,lastError:undefined});
   }
   private mergeBundles(previous:KeyBundle[],next:KeyBundle[]):KeyBundle[]{
@@ -117,10 +120,22 @@ export class VaultClient {
     const entity=validateEntity(value);this.validateRouting(entity,envelope);return entity;
   }
   private async hydrate(generation:number):Promise<void>{
-    this.check(generation);const result=new Map<string,Entity>();
-    for(const envelope of currentEnvelopes(this.stored!).values()){
+    this.check(generation);const result=new Map<string,Entity>(),current=currentEnvelopes(this.stored!);
+    for(const envelope of current.values()){
       if(envelope.lane==='assets')continue;
       const entity=await this.decode(envelope);this.check(generation);if(entity)result.set(entity.id,entity);
+    }
+    if(!this.defaultPerson){
+      const vault=this.descriptor!,date=new Date(0).toISOString();
+      const person:Person={id:await ownerPersonId(vault.id),ownerId:vault.ownerId,kind:'person',displayName:'我',status:'active',createdAt:date,updatedAt:date};
+      const directory=await personDirectory(person);
+      this.check(generation);this.defaultPerson={person,directory};
+    }
+    // The built-in profile needs no sync write until edited. A downloaded directory entry
+    // takes precedence while the saved profile is still being downloaded.
+    const {person,directory}=this.defaultPerson;
+    if(!current.has(person.id)&&!current.has(directory.id)){
+      result.set(person.id,person);result.set(directory.id,directory);
     }
     this.check(generation);this.plain=result;this.searchIndex.clear();
     for(const entry of this.directoryEntries){const names=[entry.displayName,...entry.aliases];this.searchIndex.set(entry.personId,names.flatMap(name=>[normalize(name),normalize(pinyin(name,{toneType:'none',type:'array',mode:'surname'}).join('')),normalize(pinyin(name,{pattern:'first',toneType:'none',type:'array',mode:'surname'}).join(''))]));}
@@ -130,7 +145,11 @@ export class VaultClient {
     if(!this.unlocked)return {entries:[],complete:false};const normalized=normalize(query);
     let entries=this.directoryEntries.filter(e=>options.includeArchived||e.status==='active');
     if(normalized)entries=entries.filter(e=>this.searchIndex.get(e.personId)?.some(v=>v.includes(normalized)));
-    else entries.sort((a,b)=>{const aIndex=this.recent.indexOf(a.personId),bIndex=this.recent.indexOf(b.personId);if(aIndex>=0 || bIndex>=0)return (aIndex<0?99:aIndex)-(bIndex<0?99:bIndex);return b.updatedAt.localeCompare(a.updatedAt);});
+    else entries.sort((a,b)=>{
+      const selfFirst=Number(b.personId===this.selfPersonId)-Number(a.personId===this.selfPersonId);
+      if(selfFirst)return selfFirst;
+      const aIndex=this.recent.indexOf(a.personId),bIndex=this.recent.indexOf(b.personId);if(aIndex>=0 || bIndex>=0)return (aIndex<0?99:aIndex)-(bIndex<0?99:bIndex);return b.updatedAt.localeCompare(a.updatedAt);
+    });
     return {entries:normalized?entries:entries.slice(0,5),complete:this.stateValue.directoryComplete};
   }
   put(entity:Entity):Promise<Operation>{return this.saveBatch([entity]);}
@@ -141,6 +160,7 @@ export class VaultClient {
       if(new Set([...entities.map(e=>e.id),...deleteIds]).size!==entities.length+deleteIds.length)throw new Error('DUPLICATE_MUTATION');
       for(const e of entities)working.set(e.id,e);
       for(const id of deleteIds){opaqueId.parse(id);const entity=this.plain.get(id);if(!entity)throw new Error('ENTITY_NOT_FOUND');
+        if(id===this.selfPersonId)throw new Error('CANNOT_DELETE_SELF_PERSON');
         if(entity.kind==='person'){
           if(!this.stateValue.recordsComplete)throw new Error('FULL_SYNC_REQUIRED_TO_DELETE_PERSON');const plan=planPersonDeletion(id,[...working.values()]);
           for(const e of plan.updates){working.set(e.id,e);updates.set(e.id,e);}for(const deleted of plan.deleteIds){deletes.add(deleted);working.delete(deleted);updates.delete(deleted);}
@@ -154,6 +174,7 @@ export class VaultClient {
   delete(id:string):Promise<Operation>{
     const lease=this.lease();return this.queue(async()=>{
       this.check(lease.generation);const entity=this.plain.get(id);if(!entity)throw new Error('ENTITY_NOT_FOUND');
+      if(id===this.selfPersonId)throw new Error('CANNOT_DELETE_SELF_PERSON');
       if(entity.kind==='person'){
         if(!this.stateValue.recordsComplete)throw new Error('FULL_SYNC_REQUIRED_TO_DELETE_PERSON');
         const plan=planPersonDeletion(id,[...this.plain.values()]);return this.write(plan.updates,plan.deleteIds,[],lease);
@@ -172,6 +193,15 @@ export class VaultClient {
     for(const e of entities)for(const ref of references(e)){
       const target=known.get(ref.id);const personKnown=ref.kind==='person'&&this.directoryEntries.some(p=>p.personId===ref.id);
       if(target?.kind!==ref.kind&&!personKnown)throw new Error('REFERENCE_NOT_FOUND');if(deleteIds.includes(ref.id))throw new Error('REFERENCE_TO_DELETED_ENTITY');
+    }
+    for(const e of entities) {
+      if(e.id===this.selfPersonId){
+        if(e.kind!=='person'||e.displayName!=='我'||e.status!=='active')throw new Error('INVALID_SELF_PERSON');
+        const {person,directory}=this.defaultPerson!;
+        // A form opened on the built-in profile must not overwrite a newly downloaded edit.
+        if(e.createdAt===person.createdAt&&(current.has(e.id)||current.has(directory.id)))throw new Error('LOCAL_REVISION_CONFLICT');
+        if(!current.has(e.id))e.createdAt=e.updatedAt;
+      }
     }
     for(const e of entities.filter((e):e is Person=>e.kind==='person'))entities.push(await personDirectory(e));
     const expandedDeletes=new Set(deleteIds);for(const id of deleteIds)if(this.plain.get(id)?.kind==='person')expandedDeletes.add(await directoryId(id));

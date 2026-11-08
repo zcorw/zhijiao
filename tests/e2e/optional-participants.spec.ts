@@ -73,6 +73,39 @@ async function screenshot(page: Page, name: string) {
 
 test.describe('optional participants on desktop', () => {
   test.use({ viewport: { width: 1440, height: 1000 } });
+  test('the account owner is available as a default person and can be linked to an interaction', async ({ page }) => {
+    await enter(page);
+    await navigate(page, '人物');
+    const self = page.locator('.person-card').filter({ has: page.getByText('账号本人', { exact: true }) });
+    await expect(self).toHaveCount(1);
+    await expect(page.locator('.person-card').first()).toContainText('账号本人');
+    await page.getByRole('textbox', { name: '搜索全部人物' }).fill('我');
+    await self.click();
+    await expect(page.getByRole('heading', { name: '我', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '删除人物', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '归档人物', exact: true })).toHaveCount(0);
+
+    await page.getByRole('button', { name: '编辑资料', exact: true }).click();
+    const editor = page.getByRole('dialog', { name: '编辑人物', exact: true });
+    const summary = '虚构账号的个人简介';
+    await editor.locator('[name="summary"]').fill(summary);
+    await save(editor);
+    await expect(page.getByText(summary, { exact: true })).toBeVisible();
+
+    await navigate(page, '首页');
+    const form = await journal(page);
+    await form.locator('[name="people"]').click();
+    const picker = page.getByRole('dialog', { name: '选择人物', exact: true });
+    await picker.locator('.person-row').filter({ has: page.getByText('账号本人', { exact: true }) }).click();
+    await picker.getByRole('button', { name: '确认（1）', exact: true }).click();
+    const title = `虚构个人记录${Date.now()}`;
+    await form.locator('[name="title"]').fill(title);
+    await save(form, '保存这一笔');
+    await page.reload(); await unlock(page);
+    await timeline(page, '账号本人');
+    await expect(card(page, title)).toBeVisible();
+  });
+
   test('complete unlinked records survive reload, edits, linking, unlinking, history and person timeline regression', async ({ page, context }) => {
     const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
     await enter(page); await navigate(page, '人物');
