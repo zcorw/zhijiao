@@ -9,14 +9,15 @@
   "workspaces": [
     "packages/*",
     "apps/*",
-    "vendor/nest-account/packages/*"
+    "vendor/nest-account/packages/*",
+    "vendor/encrypted-vault"
   ],
   "overrides": {
     "body-parser": "2.4.0",
     "multer": "2.5.0"
   },
   "scripts": {
-    "build:base": "npm run build -w @tts-workbench/account-core && npm run build -w @tts-workbench/account-postgres && npm run build -w @zhijiao/shared",
+    "build:base": "npm run verify:vault && npm run build -w @zcorw/encrypted-vault && npm run build -w @tts-workbench/account-core && npm run build -w @tts-workbench/account-postgres && npm run build -w @zhijiao/shared",
     "build": "npm run build:base && npm run build -w @zhijiao/client && npm run build -w @zhijiao/web && npm run build -w @zhijiao/server",
     "typecheck": "npm run build:base && npm run build -w @zhijiao/client && npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
@@ -26,7 +27,8 @@
     "dev": "npm run dev -w @zhijiao/web",
     "start": "npm run start -w @zhijiao/server",
     "migrate": "npm run migrate -w @zhijiao/server",
-    "account": "npm run account -w @zhijiao/server"
+    "account": "npm run account -w @zhijiao/server",
+    "verify:vault": "node scripts/check-vault-vendor.mjs"
   },
   "devDependencies": {
     "@eslint/js": "9.39.1",

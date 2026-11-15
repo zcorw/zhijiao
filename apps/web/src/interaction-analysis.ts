@@ -1,4 +1,4 @@
-import { interactionAnalysisSchema, validateAnalysisEvidence, partialDateSchema, type InteractionAnalysis, type InteractionAnalysisInput, type Entity, type EntityBase, type Interaction, type Person, type PersonFact, type PersonReflection, type FollowUp } from '@zhijiao/shared';
+import { interactionAnalysisSchema, interactionAnalysisFailureSchema, interactionAnalysisStatusSchema, validateAnalysisEvidence, partialDateSchema, type InteractionAnalysisProvider, type InteractionAnalysisFailure, type InteractionAnalysis, type InteractionAnalysisInput, type Entity, type EntityBase, type Interaction, type Person, type PersonFact, type PersonReflection, type FollowUp } from '@zhijiao/shared';
 import { auth } from './auth';
 
 type FactCandidate = InteractionAnalysis['facts'][number];
@@ -246,30 +246,128 @@ export function buildAnalysisRecords(source: Interaction, draft: AnalysisDraft, 
   return records;
 }
 
-async function analysisCall(path: string, body: unknown | undefined, signal?: AbortSignal): Promise<unknown> {
+const unidentifiedAnalysisFailure = '分析服务返回502，未提供可识别原因，请检查应用与代理日志。';
+const failureBodyMaxBytes = 4096;
+const failureBodyTimeoutMs = 2000;
+
+/** Read only a small, bounded diagnostic envelope; never expose provider text. */
+async function readAnalysisFailure(response: Response, signal?: AbortSignal): Promise<InteractionAnalysisFailure | undefined> {
+  if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+  if (response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json' || !response.body) return;
+  let reader: ReadableStreamDefaultReader<Uint8Array>;
+  try { reader = response.body.getReader(); } catch { return; }
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let stopReading = () => {};
+  const stopped = new Promise<undefined>(resolve => { stopReading = () => resolve(undefined); });
+  const deadline = Date.now() + failureBodyTimeoutMs;
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  let finished = false;
+  try {
+    timeout = setTimeout(stopReading, failureBodyTimeoutMs);
+    signal?.addEventListener('abort', stopReading, { once: true });
+    if (signal?.aborted) stopReading();
+    let bytes = 0;
+    let json = '';
+    while (Date.now() < deadline) {
+      const chunk = await Promise.race([reader.read(), stopped]);
+      if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+      if (Date.now() >= deadline) return;
+      if (!chunk) return;
+      if (chunk.done) {
+        finished = true;
+        json += decoder.decode();
+        const parsed = interactionAnalysisFailureSchema.safeParse(JSON.parse(json));
+        return parsed.success ? parsed.data : undefined;
+      }
+      bytes += chunk.value.byteLength;
+      if (bytes > failureBodyMaxBytes) return;
+      json += decoder.decode(chunk.value, { stream: true });
+    }
+  } catch {
+    if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', stopReading);
+    // Do not let an unresponsive stream's cancellation extend the read deadline.
+    if (!finished) void reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
+function analysisFailureMessage(failure: InteractionAnalysisFailure | undefined): string {
+  if (!failure) return unidentifiedAnalysisFailure;
+  const diagnostic = [failure.code, failure.reason,
+    failure.reason === 'UPSTREAM_HTTP' && failure.upstreamStatus !== undefined ? `HTTP ${failure.upstreamStatus}` : '',
+    failure.reason === 'MODEL_SCHEMA' && failure.issueCount !== undefined ? `校验问题数：${failure.issueCount}` : '',
+  ].filter(Boolean).join(' / ');
+  if (failure.code === 'AI_TIMEOUT' || failure.reason === 'TIMEOUT') {
+    return `应用分析超时${failure.timeoutMs === undefined ? '' : `（配置上限 ${failure.timeoutMs / 1000} 秒）`}，请联系管理员核对分析超时配置。（${diagnostic}）`;
+  }
+  if (!failure.reason) return `应用分析失败，服务尚未细分失败原因，请向管理员提供括号内诊断码，并升级服务或核对运行配置。（${diagnostic}）`;
+  let message: string;
+  if (failure.reason === 'UPSTREAM_HTTP') {
+    const status = failure.upstreamStatus;
+    if (status === 401) message = 'AI 供应商拒绝认证，请联系管理员检查 API 密钥及权限。';
+    else if (status === 403) message = 'AI 供应商拒绝访问，请联系管理员检查 API 密钥及权限、服务可用地区。';
+    else if (status === 402) message = 'AI 供应商账户余额或额度不足，请联系管理员检查账单与可用额度。';
+    else if (status === 429) message = 'AI 供应商返回限流或额度错误。请稍后重试，或联系管理员检查 API 余额及额度。';
+    else if (status === 400 || status === 404) message = 'AI 供应商拒绝当前模型或请求参数，请联系管理员检查模型名称、接口地址及参数。';
+    else if (status !== undefined && status >= 500) message = 'AI 供应商服务异常，请稍后重试或联系管理员。';
+    else message = 'AI 供应商返回异常状态，请联系管理员检查上游请求。';
+  } else {
+    const messages: Record<Exclude<NonNullable<InteractionAnalysisFailure['reason']>, 'UPSTREAM_HTTP' | 'TIMEOUT'>, string> = {
+      UPSTREAM_NETWORK: '应用无法连接 AI 供应商，请联系管理员检查供应商地址及网络连接。',
+      RESPONSE_TOO_LARGE: 'AI 供应商返回内容过大，应用已停止读取，请联系管理员检查响应大小限制。',
+      RESPONSE_INVALID_JSON: 'AI 供应商接口未返回有效 JSON，请联系管理员检查接口地址及供应商响应格式。',
+      RESPONSE_INVALID: 'AI 供应商接口响应结构不完整或格式不受支持，请联系管理员检查接口兼容性。',
+      OUTPUT_INCOMPLETE: 'AI 模型输出被截断或未完成，请联系管理员检查输出长度限制。',
+      OUTPUT_REFUSED: 'AI 服务拒绝生成这次分析。请核对交往内容后再试。',
+      OUTPUT_INVALID_JSON: 'AI 模型输出不是有效 JSON，请联系管理员检查模型输出格式。',
+      MODEL_SCHEMA: 'AI 模型输出未通过分析结构校验，请联系管理员检查分析协议与模型兼容性。',
+      MODEL_EVIDENCE: 'AI 模型输出中的原文依据无法与这次交往对应，请核对原文，并向管理员提供括号内诊断码。',
+      MODEL_SEMANTICS: 'AI 模型输出中的人物来源或语义关系不符合分析规则，请核对原文，并向管理员提供括号内诊断码。',
+      CANDIDATE_BUDGET: 'AI 模型输出的候选及来源依据过长，无法完整保存，请缩短或拆分交往正文后重新分析。',
+      NORMALIZATION: '应用整理分析结果时失败，请向管理员提供括号内诊断码并核对运行配置。',
+      INTERNAL: '应用处理分析时发生内部错误，请向管理员提供括号内诊断码并核对运行配置。',
+    };
+    message = messages[failure.reason];
+  }
+  return `${message}（${diagnostic}）`;
+}
+
+export class AnalysisProviderChangedError extends Error {
+  constructor() { super('分析服务已切换。请核对新的接收方，再开始分析。'); }
+}
+
+async function analysisCall(path: 'status' | 'interaction', options: RequestInit): Promise<unknown> {
   let response: Response;
   try {
-    response = await fetch(`/api/analysis/${path}`, { method: body === undefined ? 'GET' : 'POST', credentials: 'same-origin', signal,
-      headers: body === undefined ? {} : { 'content-type': 'application/json', 'x-csrf-token': auth.csrfToken() }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    response = await fetch(`/api/analysis/${path}`, { ...options, credentials: 'same-origin' });
   } catch (error) {
-    if (signal?.aborted) throw error;
+    if (options.signal?.aborted) throw error;
     throw new Error('无法连接分析服务，请检查网络后重试。');
   }
   if (!response.ok) {
-    const messages: Record<number, string> = { 400: '交往内容过长或格式不正确，请将标题控制在 300 字、正文控制在 20000 字内。', 401: '登录会话已失效，请重新登录后分析。', 403: '登录验证已失效，请重新登录后分析。', 429: '分析正在进行或请求过于频繁，请稍后重试。', 503: '分析服务尚未配置，请联系管理员配置 AI 服务。' };
+    if (path === 'interaction' && response.status === 409) throw new AnalysisProviderChangedError();
+    if (response.status === 502) throw new Error(analysisFailureMessage(await readAnalysisFailure(response, options.signal ?? undefined)));
+    const messages: Record<number, string> = { 400: '交往内容过长或格式不正确，请将标题控制在 300 字、正文控制在 20000 字内。', 401: '登录会话已失效，请重新登录后分析。', 403: '登录验证已失效，请重新登录后分析。', 429: '分析正在进行或请求过于频繁，请稍后重试。', 503: '分析服务尚未配置，请联系管理员配置 AI 服务。', 504: '网关等待分析超时，分析可能仍在进行。请联系管理员延长网关等待时间，暂勿重复提交。' };
     throw new Error(messages[response.status] ?? '分析未完成或返回内容不合要求，请重试。');
   }
   return response.json();
 }
 
-export async function analysisAvailability(signal?: AbortSignal): Promise<{ available: boolean; providerLabel?: string }> {
-  const result = await analysisCall('status', undefined, signal) as { available?: unknown; providerLabel?: unknown };
-  if (typeof result.available !== 'boolean') throw new Error('分析服务状态异常，请重试。');
-  return { available: result.available, ...(typeof result.providerLabel === 'string' ? { providerLabel: result.providerLabel } : {}) };
+export async function analysisAvailability(signal?: AbortSignal) {
+  const result = interactionAnalysisStatusSchema.safeParse(await analysisCall('status', { method: 'GET', signal }));
+  if (!result.success) throw new Error('分析服务状态异常，请重试。');
+  return result.data;
 }
 
-export async function requestInteractionAnalysis(record: Interaction, signal?: AbortSignal): Promise<InteractionAnalysis> {
-  const value = await analysisCall('interaction', { title: record.title, content: record.content, ...(record.occurredOn ? { occurredOn: record.occurredOn } : {}) }, signal);
+export async function requestInteractionAnalysis(record: Interaction, provider: InteractionAnalysisProvider, signal?: AbortSignal): Promise<InteractionAnalysis> {
+  const value = await analysisCall('interaction', {
+    method: 'POST', signal,
+    headers: { 'content-type': 'application/json', 'x-csrf-token': auth.csrfToken(), 'x-interaction-ai-provider': provider },
+    body: JSON.stringify({ title: record.title, content: record.content, ...(record.occurredOn ? { occurredOn: record.occurredOn } : {}) }),
+  });
   const result = interactionAnalysisSchema.safeParse(value);
   if (!result.success) throw new Error('分析返回的内容不完整，请重试。');
   if (!validateAnalysisEvidence(result.data, record)) throw new Error('分析返回的原文依据与这次交往不符，请重试。');

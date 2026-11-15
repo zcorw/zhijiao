@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Entity, EntityBase, Interaction, InteractionAnalysisInput, Person } from '@zhijiao/shared';
 import { validateEntity, references } from '../../packages/client/src/entities.js';
-import { buildAnalysisRecords, createAnalysisDraft, factNeedsClarification, followUpNeedsClarification, reflectionNeedsAdoption, requestInteractionAnalysis } from '../../apps/web/src/interaction-analysis';
+import { analysisAvailability, AnalysisProviderChangedError, buildAnalysisRecords, createAnalysisDraft, factNeedsClarification, followUpNeedsClarification, reflectionNeedsAdoption, requestInteractionAnalysis } from '../../apps/web/src/interaction-analysis';
 
 const ownerId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 function base(): EntityBase { return { id: crypto.randomUUID(), ownerId, createdAt: '2026-10-25T00:00:00.000Z', updatedAt: '2026-10-25T00:00:00.000Z' }; }
@@ -17,7 +17,7 @@ function analysis(): InteractionAnalysisInput {
 function factAnalysis(): InteractionAnalysisInput {
   return { ...analysis(), facts: [{ personKey: 'meng', type: 'current-state', content: '孟桥尚未决定搬家。', category: '居住计划', basis: 'self-reported', factStatus: 'candidate', evidence: '我还没决定搬家', evidenceQuotes: ['孟桥说：“我还没决定搬家。”', '我还没决定搬家'], statementId: 'statement-1', classificationReason: '本人表达当前计划状态。', source: { type: 'person', personId: 'meng' }, uncertainty: '尚未确定未来是否搬家', polarity: 'negated' }], backgrounds: [{ personKeys: [], content: '这次在书店见面。', evidence: '书店见面' }] };
 }
-afterEach(() => { vi.unstubAllGlobals(); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('analysis selection and encrypted transaction planning', () => {
   it('starts with every candidate unchecked, matches only unique complete names or aliases, and never maps the narrator', () => {
@@ -310,23 +310,194 @@ describe('analysis facts, provenance, and clarification', () => {
 });
 
 describe('analysis browser request boundary', () => {
-  it('sends only the current interaction text and date, with no profile or account payload', async () => {
+  const unidentifiedFailure = '分析服务返回502，未提供可识别原因，请检查应用与代理日志。';
+  function mockFailure(response: Response) {
+    const fetcher = vi.fn().mockResolvedValue(response); vi.stubGlobal('fetch', fetcher);
+    return fetcher;
+  }
+  async function failureMessage(signal?: AbortSignal): Promise<string> {
+    const result = await requestInteractionAnalysis(event, 'openai', signal).catch((error: unknown) => error);
+    expect(result).toBeInstanceOf(Error);
+    return (result as Error).message;
+  }
+  it.each(['deepseek', 'openai'] as const)('pins %s and sends only the current interaction text and date', async (provider) => {
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(analysis()), { status: 200 })); vi.stubGlobal('fetch', fetcher);
-    await expect(requestInteractionAnalysis(event)).resolves.toEqual({ ...analysis(), facts: [], backgrounds: [] });
+    await expect(requestInteractionAnalysis(event, provider)).resolves.toEqual({ ...analysis(), facts: [], backgrounds: [] });
     const [url, options] = fetcher.mock.calls[0]; expect(url).toBe('/api/analysis/interaction');
     expect(JSON.parse(options.body)).toEqual({ title: event.title, content: event.content, occurredOn: event.occurredOn });
     expect(options.credentials).toBe('same-origin'); expect(options.headers).toHaveProperty('x-csrf-token');
+    expect(options.headers).toHaveProperty('x-interaction-ai-provider', provider);
+  });
+  it('rejects a service status without a known recipient', async () => {
+    const fetcher = vi.fn().mockResolvedValue(Response.json({ available: true, providerLabel: 'DeepSeek' }));
+    vi.stubGlobal('fetch', fetcher);
+    await expect(analysisAvailability()).rejects.toThrow('分析服务状态异常');
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith('/api/analysis/status', { method: 'GET', credentials: 'same-origin', signal: undefined });
+  });
+  it('reports a recipient conflict without retrying the interaction request', async () => {
+    const fetcher = mockFailure(Response.json({ code: 'AI_PROVIDER_CHANGED' }, { status: 409 }));
+    await expect(requestInteractionAnalysis(event, 'deepseek')).rejects.toBeInstanceOf(AnalysisProviderChangedError);
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
   it('rejects malformed responses and explains an unconfigured service without exposing raw errors', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ people: [] }), { status: 200 })));
-    await expect(requestInteractionAnalysis(event)).rejects.toThrow('不完整');
+    await expect(requestInteractionAnalysis(event, 'openai')).rejects.toThrow('不完整');
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('secret upstream diagnostic', { status: 503 })));
-    await expect(requestInteractionAnalysis(event)).rejects.toThrow('尚未配置');
+    await expect(requestInteractionAnalysis(event, 'openai')).rejects.toThrow('尚未配置');
+  });
+  it.each([
+    { reason: 'UPSTREAM_NETWORK', explanation: '无法连接 AI 供应商' },
+    { reason: 'RESPONSE_TOO_LARGE', explanation: '返回内容过大' },
+    { reason: 'RESPONSE_INVALID_JSON', explanation: '接口未返回有效 JSON' },
+    { reason: 'RESPONSE_INVALID', explanation: '接口响应结构不完整' },
+    { reason: 'OUTPUT_INCOMPLETE', explanation: '输出被截断或未完成' },
+    { reason: 'OUTPUT_REFUSED', explanation: 'AI 服务拒绝生成这次分析' },
+    { reason: 'OUTPUT_INVALID_JSON', explanation: '模型输出不是有效 JSON' },
+    { reason: 'MODEL_SCHEMA', explanation: '未通过分析结构校验' },
+    { reason: 'MODEL_EVIDENCE', explanation: '原文依据无法与这次交往对应，请核对原文，并向管理员提供括号内诊断码' },
+    { reason: 'MODEL_SEMANTICS', explanation: '人物来源或语义关系不符合分析规则，请核对原文，并向管理员提供括号内诊断码' },
+    { reason: 'CANDIDATE_BUDGET', explanation: '候选及来源依据过长，无法完整保存' },
+    { reason: 'NORMALIZATION', explanation: '整理分析结果时失败，请向管理员提供括号内诊断码并核对运行配置' },
+    { reason: 'INTERNAL', explanation: '内部错误，请向管理员提供括号内诊断码并核对运行配置' },
+  ])('explains the whitelisted $reason diagnosis without retrying', async ({ reason, explanation }) => {
+    const fetcher = mockFailure(new Response(JSON.stringify({ code: 'AI_FAILED', reason, issueCount: 3 }), { status: 502, headers: { 'content-type': 'application/json; charset=utf-8' } }));
+    const message = await failureMessage();
+    expect(message).toContain(explanation); expect(message).toContain(`AI_FAILED / ${reason}`);
+    if (reason === 'MODEL_SCHEMA') expect(message).toContain('校验问题数：3');
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    { status: 401, explanation: '密钥及权限' }, { status: 403, explanation: '密钥及权限' },
+    { status: 402, explanation: '余额或额度不足' }, { status: 429, explanation: '限流或额度错误' },
+    { status: 400, explanation: '模型或请求参数' }, { status: 404, explanation: '模型或请求参数' },
+    { status: 500, explanation: '供应商服务异常' }, { status: 599, explanation: '供应商服务异常' },
+    { status: 418, explanation: '供应商返回异常状态' },
+  ])('distinguishes upstream HTTP $status from the application 502', async ({ status, explanation }) => {
+    const fetcher = mockFailure(new Response(JSON.stringify({ code: 'AI_FAILED', reason: 'UPSTREAM_HTTP', upstreamStatus: status }), { status: 502, headers: { 'content-type': 'application/json' } }));
+    const message = await failureMessage();
+    expect(message).toContain(explanation); expect(message).toContain(`UPSTREAM_HTTP / HTTP ${status}`);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    { code: 'AI_TIMEOUT', reason: 'TIMEOUT', timeoutMs: 120000, seconds: '120' },
+    { code: 'AI_TIMEOUT', timeoutMs: 1500, seconds: '1.5' },
+    { code: 'AI_FAILED', reason: 'TIMEOUT', timeoutMs: 600000, seconds: '600' },
+  ])('explains an application timeout with its validated configuration', async ({ seconds, ...body }) => {
+    const fetcher = mockFailure(new Response(JSON.stringify(body), { status: 502, headers: { 'content-type': 'application/json' } }));
+    const message = await failureMessage();
+    expect(message).toContain('应用分析超时'); expect(message).toContain(`配置上限 ${seconds} 秒`); expect(message).toContain(body.code);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('does not invent a configured duration when a timeout has none', async () => {
+    mockFailure(new Response(JSON.stringify({ code: 'AI_TIMEOUT' }), { status: 502, headers: { 'content-type': 'application/json' } }));
+    const message = await failureMessage(); expect(message).toContain('应用分析超时'); expect(message).not.toContain('配置上限');
+  });
+  it('keeps legacy AI_FAILED general instead of claiming a model schema failure', async () => {
+    const fetcher = mockFailure(new Response(JSON.stringify({ code: 'AI_FAILED' }), { status: 502, headers: { 'content-type': 'application/json' } }));
+    const message = await failureMessage();
+    expect(message).toContain('应用分析失败'); expect(message).toContain('尚未细分失败原因'); expect(message).not.toContain('结构校验');
+    expect(message).toContain('向管理员提供括号内诊断码，并升级服务或核对运行配置');
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('ignores unrecognized message, stack, credential and provider fields without displaying or logging them', async () => {
+    const marker = 'fictional-private-diagnostic-marker';
+    const loggers = ['log', 'warn', 'error'].map(method => vi.spyOn(console, method as 'log' | 'warn' | 'error').mockImplementation(() => {}));
+    const fetcher = mockFailure(new Response(JSON.stringify({ code: 'AI_FAILED', reason: 'MODEL_EVIDENCE', message: marker, stack: marker, apiKey: marker, upstreamBody: marker }), { status: 502, headers: { 'content-type': 'Application/JSON' } }));
+    const message = await failureMessage();
+    expect(message).toContain('MODEL_EVIDENCE'); expect(message.includes(marker)).toBe(false);
+    expect(loggers.every(logger => logger.mock.calls.length === 0)).toBe(true); expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    { label: 'empty body', body: '' }, { label: 'whitespace', body: '   ' },
+    { label: 'HTML masquerading as JSON', body: '<html>fictional-private-diagnostic-marker</html>' },
+    { label: 'malformed JSON', body: '{"code":"AI_FAILED"' },
+    { label: 'unknown code', body: JSON.stringify({ code: 'UNRECOGNIZED' }) },
+    { label: 'missing code', body: JSON.stringify({ reason: 'MODEL_SCHEMA' }) },
+    { label: 'unknown reason', body: JSON.stringify({ code: 'AI_FAILED', reason: 'NEW_PRIVATE_REASON' }) },
+    { label: 'wrong reason type', body: JSON.stringify({ code: 'AI_FAILED', reason: ['MODEL_SCHEMA'] }) },
+    { label: 'null object', body: 'null' }, { label: 'array', body: '[]' },
+    { label: 'string upstream status', body: JSON.stringify({ code: 'AI_FAILED', reason: 'UPSTREAM_HTTP', upstreamStatus: '401' }) },
+    { label: 'fractional upstream status', body: JSON.stringify({ code: 'AI_FAILED', reason: 'UPSTREAM_HTTP', upstreamStatus: 401.5 }) },
+    { label: 'low upstream status', body: JSON.stringify({ code: 'AI_FAILED', reason: 'UPSTREAM_HTTP', upstreamStatus: 99 }) },
+    { label: 'high upstream status', body: JSON.stringify({ code: 'AI_FAILED', reason: 'UPSTREAM_HTTP', upstreamStatus: 600 }) },
+    { label: 'zero timeout', body: JSON.stringify({ code: 'AI_TIMEOUT', timeoutMs: 0 }) },
+    { label: 'large timeout', body: JSON.stringify({ code: 'AI_TIMEOUT', timeoutMs: 600001 }) },
+    { label: 'string timeout', body: JSON.stringify({ code: 'AI_TIMEOUT', timeoutMs: '120000' }) },
+    { label: 'negative issue count', body: JSON.stringify({ code: 'AI_FAILED', reason: 'MODEL_SCHEMA', issueCount: -1 }) },
+    { label: 'large issue count', body: JSON.stringify({ code: 'AI_FAILED', reason: 'MODEL_SCHEMA', issueCount: 10001 }) },
+  ])('uses a fixed 502 explanation for $label', async ({ body }) => {
+    const fetcher = mockFailure(new Response(body, { status: 502, headers: { 'content-type': 'application/json' } }));
+    expect(await failureMessage()).toBe(unidentifiedFailure); expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it.each(['text/html', 'text/plain', 'application/problem+json'])('does not read a 502 body with content type %s', async type => {
+    const response = new Response('{"code":"AI_FAILED","reason":"MODEL_SCHEMA"}', { status: 502, headers: { 'content-type': type } });
+    const fetcher = mockFailure(response);
+    expect(await failureMessage()).toBe(unidentifiedFailure); expect(response.bodyUsed).toBe(false); expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('accepts an actual 4 KiB envelope even if its declared content length is larger', async () => {
+    const json = JSON.stringify({ code: 'AI_FAILED', reason: 'MODEL_SCHEMA' }).padEnd(4096, ' ');
+    const fetcher = mockFailure(new Response(json, { status: 502, headers: { 'content-type': 'application/json', 'content-length': '999999' } }));
+    expect(await failureMessage()).toContain('MODEL_SCHEMA'); expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('caps chunked UTF-8 bytes independently of a smaller content length and releases the reader', async () => {
+    const encoded = new TextEncoder().encode(JSON.stringify({ code: 'AI_FAILED', reason: 'MODEL_SCHEMA', message: '界'.repeat(1400) }));
+    const cancel = vi.fn();
+    const stream = new ReadableStream<Uint8Array>({ start(controller) { for (let offset = 0; offset < encoded.byteLength; offset += 1000) controller.enqueue(encoded.slice(offset, offset + 1000)); }, cancel });
+    const fetcher = mockFailure(new Response(stream, { status: 502, headers: { 'content-type': 'application/json', 'content-length': '1' } }));
+    expect(await failureMessage()).toBe(unidentifiedFailure); expect(cancel).toHaveBeenCalledTimes(1); expect(stream.locked).toBe(false); expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('bounds a stalled error body to two seconds even when stream cancellation also stalls', async () => {
+    vi.useFakeTimers();
+    const cancel = vi.fn(() => new Promise<void>(() => {}));
+    const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode('{"code":"AI_FAILED"')); }, cancel });
+    const fetcher = mockFailure(new Response(stream, { status: 502, headers: { 'content-type': 'application/json' } }));
+    const message = failureMessage();
+    await vi.advanceTimersByTimeAsync(1999); expect(stream.locked).toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await message).toBe(unidentifiedFailure); expect(cancel).toHaveBeenCalledTimes(1); expect(stream.locked).toBe(false); expect(vi.getTimerCount()).toBe(0); expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('preserves an abort during error-body reading and cleans up its stream, timer and listener', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController(); const removed = vi.spyOn(controller.signal, 'removeEventListener');
+    const aborted = new DOMException('Aborted', 'AbortError'); const cancel = vi.fn(() => new Promise<void>(() => {}));
+    const stream = new ReadableStream<Uint8Array>({ start(streamController) { streamController.enqueue(new TextEncoder().encode('{')); }, cancel });
+    const fetcher = mockFailure(new Response(stream, { status: 502, headers: { 'content-type': 'application/json' } }));
+    const result = requestInteractionAnalysis(event, 'openai', controller.signal).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0); expect(stream.locked).toBe(true);
+    controller.abort(aborted);
+    expect(await result).toBe(aborted); expect(cancel).toHaveBeenCalledTimes(1); expect(stream.locked).toBe(false); expect(vi.getTimerCount()).toBe(0);
+    expect(removed).toHaveBeenCalledWith('abort', expect.any(Function)); expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('uses the fixed fallback when the diagnostic stream itself fails', async () => {
+    const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.error(new Error('fictional-private-stream-marker')); } });
+    const fetcher = mockFailure(new Response(stream, { status: 502, headers: { 'content-type': 'application/json' } }));
+    expect(await failureMessage()).toBe(unidentifiedFailure); expect(stream.locked).toBe(false); expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    { status: 400, message: '交往内容过长或格式不正确，请将标题控制在 300 字、正文控制在 20000 字内。' },
+    { status: 401, message: '登录会话已失效，请重新登录后分析。' },
+    { status: 403, message: '登录验证已失效，请重新登录后分析。' },
+    { status: 429, message: '分析正在进行或请求过于频繁，请稍后重试。' },
+    { status: 503, message: '分析服务尚未配置，请联系管理员配置 AI 服务。' },
+  ])('preserves the application HTTP $status explanation without reading its body or retrying', async ({ status, message }) => {
+    const response = new Response('{"code":"AI_FAILED","reason":"MODEL_SCHEMA"}', { status, headers: { 'content-type': 'application/json' } });
+    const fetcher = mockFailure(response);
+    expect(await failureMessage()).toBe(message); expect(response.bodyUsed).toBe(false); expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    { type: 'text/html', body: '<html><h1>504 Gateway Timeout</h1><p>虚构秘密：fictional-private-marker</p></html>' },
+    { type: 'application/json', body: JSON.stringify({ code: 'AI_TIMEOUT', message: '虚构秘密：fictional-private-marker', people: [] }) },
+  ])('explains a $type gateway timeout without exposing its body or retrying', async ({ type, body }) => {
+    const response = new Response(body, { status: 504, headers: { 'content-type': type } });
+    const fetcher = vi.fn().mockResolvedValue(response); vi.stubGlobal('fetch', fetcher);
+    await expect(requestInteractionAnalysis(event, 'openai')).rejects.toMatchObject({ message: '网关等待分析超时，分析可能仍在进行。请联系管理员延长网关等待时间，暂勿重复提交。' });
+    expect(response.bodyUsed).toBe(false);
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
   it('preserves cancellation and passes its abort signal to fetch', async () => {
     const controller = new AbortController(); controller.abort(); const aborted = new DOMException('Aborted', 'AbortError');
     const fetcher = vi.fn().mockRejectedValue(aborted); vi.stubGlobal('fetch', fetcher);
-    await expect(requestInteractionAnalysis(event, controller.signal)).rejects.toBe(aborted);
+    await expect(requestInteractionAnalysis(event, 'openai', controller.signal)).rejects.toBe(aborted);
     expect(fetcher.mock.calls[0][1].signal).toBe(controller.signal);
   });
 });

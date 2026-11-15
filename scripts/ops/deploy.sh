@@ -3,12 +3,29 @@
 set -Eeuo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh"
 [[ $# == 1 && "$1" =~ ^ghcr\.io/zcorw/zhijiao@sha256:[a-f0-9]{64}$ ]] || fail "Usage: bash scripts/ops/deploy.sh ghcr.io/zcorw/zhijiao@sha256:<64 hex characters>"
-# Keep optional app configuration on every command in this upgrade.
-if [[ -f "$OPS_ROOT/compose.deepseek.yaml" ]]; then
-  COMPOSE+=(-f "$OPS_ROOT/compose.deepseek.yaml")
-fi
 upgrade_lock
 export APP_IMAGE="$1"
+
+add_analysis_overlay() {
+  local overlay="$OPS_ROOT/compose.$1.yaml" key_path=$2
+  [[ "$key_path" == /* ]] || key_path="$OPS_ROOT/$key_path"
+  if [[ -f "$overlay" && -f "$key_path" ]]; then
+    COMPOSE+=(-f "$overlay")
+  fi
+}
+
+# Let Compose interpret .env and shell overrides. Capture only the two file paths.
+analysis_paths=$("${COMPOSE[@]}" config --environment | sed -nE '/^(DEEPSEEK|OPENAI)_API_KEY_PATH=/p') || fail 'Could not resolve analysis key paths'
+deepseek_key= openai_key=
+while IFS= read -r entry; do
+  case "$entry" in
+    DEEPSEEK_API_KEY_PATH=*) deepseek_key=${entry#*=} ;;
+    OPENAI_API_KEY_PATH=*) openai_key=${entry#*=} ;;
+  esac
+done <<<"$analysis_paths"
+add_analysis_overlay deepseek "${deepseek_key:-./.local/secrets/deepseek-api-key}"
+add_analysis_overlay openai "${openai_key:-./.local/secrets/openai-api-key}"
+
 "${COMPOSE[@]}" config --quiet
 "${COMPOSE[@]}" pull app
 # Backup is mandatory; the first install uses the documented initial setup flow.

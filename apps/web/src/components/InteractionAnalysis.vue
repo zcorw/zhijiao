@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { Interaction, Person } from '@zhijiao/shared';
 import { base, entities, generation, isCurrent, saveEntities, vaultState } from '../state';
 import { label } from '../format';
-import { analysisAvailability, buildAnalysisRecords, createAnalysisDraft, factNeedsClarification, followUpNeedsClarification, reflectionNeedsAdoption, requestInteractionAnalysis, type AnalysisDraft } from '../interaction-analysis';
+import { analysisAvailability, AnalysisProviderChangedError, buildAnalysisRecords, createAnalysisDraft, factNeedsClarification, followUpNeedsClarification, reflectionNeedsAdoption, requestInteractionAnalysis, type AnalysisDraft } from '../interaction-analysis';
 import Drawer from './Drawer.vue';
 import DateTimeInput from './DateTimeInput.vue';
 import Icon from './Icon.vue';
@@ -15,8 +15,8 @@ const emit = defineEmits<{ close: [] }>();
 const source: Interaction = { ...props.record, participantIds: [...props.record.participantIds] };
 const token = generation;
 const checking = ref(true);
-const available = ref(false);
-const provider = ref('');
+const status = ref<Awaited<ReturnType<typeof analysisAvailability>>>({ available: false });
+const available = computed(() => status.value.available);
 const analyzing = ref(false);
 const saving = ref(false);
 const saved = ref(false);
@@ -89,25 +89,37 @@ async function showError(message: string) {
   errorElement.value?.focus();
 }
 async function check() {
-  checking.value = true; error.value = '';
+  const { signal } = controller;
+  checking.value = true;
+  error.value = '';
+  status.value = { available: false };
   try {
-    const result = await analysisAvailability(controller.signal);
-    if (!isCurrent(token)) return;
-    available.value = result.available; provider.value = result.providerLabel ?? '';
+    const result = await analysisAvailability(signal);
+    if (signal.aborted || !isCurrent(token)) return;
+    status.value = result;
   } catch (cause) {
-    if (!controller.signal.aborted && isCurrent(token)) await showError(cause instanceof Error ? cause.message : '暂时无法检查分析服务，请重试。');
-  } finally { if (isCurrent(token)) checking.value = false; }
+    if (!signal.aborted && isCurrent(token)) await showError(cause instanceof Error ? cause.message : '暂时无法检查分析服务，请重试。');
+  } finally { if (!signal.aborted && isCurrent(token)) checking.value = false; }
 }
 async function analyze() {
-  if (analyzing.value || !available.value || saving.value || saved.value) return;
-  controller.abort(); controller = new AbortController();
+  const service = status.value;
+  if (checking.value || analyzing.value || !service.available || saving.value || saved.value) return;
+  controller.abort();
+  controller = new AbortController();
+  const { signal } = controller;
   analyzing.value = true; error.value = '';
   try {
-    const result = await requestInteractionAnalysis(source, controller.signal);
-    if (!isCurrent(token)) return;
+    const result = await requestInteractionAnalysis(source, service.provider, signal);
+    if (signal.aborted || !isCurrent(token)) return;
     draft.value = createAnalysisDraft(result, entities.value);
   } catch (cause) {
-    if (!controller.signal.aborted && isCurrent(token)) await showError(cause instanceof Error ? cause.message : '分析未完成，请重试。');
+    if (signal.aborted || !isCurrent(token)) return;
+    if (cause instanceof AnalysisProviderChangedError) {
+      await check();
+      if (!signal.aborted && isCurrent(token) && available.value) await showError(cause.message);
+    } else {
+      await showError(cause instanceof Error ? cause.message : '分析未完成，请重试。');
+    }
   } finally { if (isCurrent(token)) analyzing.value = false; }
 }
 async function save() {
@@ -136,11 +148,11 @@ onBeforeUnmount(() => { controller.abort(); draft.value = undefined; error.value
       <template v-if="!saved">
         <div class="analysis-intro">
           <p>描述中的“我”默认指当前操作的用户；引语中的“我”按说话者理解。不会为当前用户自动新建人物。</p>
-          <p class="muted">开始分析会将本次交往的标题、内容及日期经本应用服务器发送给 DeepSeek{{ provider ? '（' + provider + '）' : '' }}。分析只生成候选，请检查人物归属和原文依据后再写入。</p>
+          <p v-if="status.available" class="muted">开始分析会将本次交往的标题、内容及日期经本应用服务器发送给 {{ status.providerLabel }}。分析只生成候选，请检查人物归属和原文依据后再写入。</p>
           <details class="analysis-source"><summary>查看本次交往原文</summary><strong>{{ source.title }}</strong><p class="preserve">{{ source.content || '（仅有标题）' }}</p></details>
         </div>
         <p v-if="checking" class="muted" role="status">正在检查分析服务…</p>
-        <p v-else-if="!available && !error" class="notice">尚未配置 DeepSeek 分析服务。请在服务端配置 DeepSeek API 密钥后使用。</p>
+        <p v-else-if="!available && !error" class="notice">当前分析服务不可用。请在设置中检查服务选择和密钥配置状态。</p>
         <p v-if="analyzing" class="notice" role="status">正在整理人物、感受与印象、事项、事实与偏好及交往背景，可以随时取消。</p>
         <template v-if="draft">
           <p class="notice">候选默认均未选中。先勾选人物并确认对应档案，再选择要写入的感受、事项及事实与偏好。交往背景仅供查看。已有记录会保留。</p>

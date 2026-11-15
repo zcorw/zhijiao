@@ -1,3 +1,4 @@
+import { VaultError } from '@zcorw/encrypted-vault/server';
 import 'reflect-metadata';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -16,11 +17,13 @@ import { DATABASE, CONFIG } from './database.js';
 import { AuthController, AuthService, AuthGuard, csrfMiddleware } from './auth.js';
 import { VaultController, VaultService } from './vaults.js';
 import { InteractionAnalysisController, InteractionAnalysisService } from './interaction-analysis.js';
+import { InteractionAnalysisPreferencesController, InteractionAnalysisPreferencesService } from './interaction-analysis-settings.js';
 import type { AppConfig } from './config.js';
 @Catch()
 class PrivateErrorFilter implements ExceptionFilter {
   catch(error: unknown, host: ArgumentsHost) {
     const response = host.switchToHttp().getResponse();
+    if (error instanceof VaultError) return response.status(error.status).json(error.body);
     if (error instanceof HttpException) return response.status(error.getStatus()).json(error.getResponse());
     const status = (error as { status?: number })?.status === 413 ? 413 : 500;
     return response.status(status).json({ code: status === 413 ? 'PAYLOAD_TOO_LARGE' : 'INTERNAL_ERROR' });
@@ -40,7 +43,8 @@ export async function createApplication(config: AppConfig, pool: Pool): Promise<
   class InfrastructureModule {}
   @Module({ imports: [InfrastructureModule, AccountModule.registerAsync({ inject: [DATABASE], useFactory: (database: Pool) => ({
     repository: new PostgresAccountRepository(database), passwords: argon2Passwords, randomId: randomUUID,
-  }) })], controllers: [AuthController, VaultController, HealthController, InteractionAnalysisController], providers: [AuthService, AuthGuard, VaultService, InteractionAnalysisService] })
+  }) })], controllers: [AuthController, VaultController, HealthController, InteractionAnalysisController, InteractionAnalysisPreferencesController],
+    providers: [AuthService, AuthGuard, VaultService, InteractionAnalysisService, InteractionAnalysisPreferencesService] })
   class ApplicationModule {}
   const app = await NestFactory.create<NestExpressApplication>(ApplicationModule, { logger: false, bodyParser: false });
   app.setGlobalPrefix('api'); app.useGlobalFilters(new PrivateErrorFilter()); app.set('trust proxy', config.trustProxy);

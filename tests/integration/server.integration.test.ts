@@ -3,7 +3,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
 import { gzipSync } from 'node:zlib';
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import session, { type SessionData } from 'express-session';
 import type { Request } from 'express';
 import { Pool } from 'pg';
@@ -37,8 +37,9 @@ suite('server real PostgreSQL contracts', () => {
   let accounts: AccountService; let ownerId: string; let store: HashedSessionStore;
   class Client {
     cookie = ''; csrf = '';
+    constructor(private readonly endpoint = base) {}
     async call(path: string, method = 'GET', body?: unknown, extra: Record<string, string> = {}) {
-      const response = await fetch(base + path, { method, headers: { cookie: this.cookie, origin: config.origin,
+      const response = await fetch(this.endpoint + path, { method, headers: { cookie: this.cookie, origin: config.origin,
         'content-type': 'application/json', 'x-csrf-token': this.csrf, ...extra }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
       const cookie = response.headers.getSetCookie().find(value => value.startsWith('zj_session='));
       if (cookie) this.cookie = cookie.split(';')[0];
@@ -166,6 +167,83 @@ suite('server real PostgreSQL contracts', () => {
     expect((await client.call('/analysis/interaction', 'POST', { ...input, currentUser: 'supplied' })).status).toBe(400);
     const unavailable = await client.call('/analysis/interaction', 'POST', input);
     expect(unavailable.status).toBe(503); expect(await unavailable.json()).toEqual({ code: 'AI_NOT_CONFIGURED' });
+  });
+  it('authenticates provider settings, rejects malformed selections and refuses an unconfigured provider', async () => {
+    const client = new Client();
+    expect((await client.call('/analysis/settings')).status).toBe(401);
+    const challenge = await client.call('/auth/csrf');
+    client.csrf = (await challenge.json()).csrfToken;
+    expect((await client.call('/analysis/settings', 'PUT', { provider: 'openai' })).status).toBe(401);
+    await client.login();
+
+    const settings = await client.call('/analysis/settings');
+    expect(settings.status).toBe(200);
+    expect(settings.headers.get('cache-control')).toBe('no-store');
+    expect(await settings.json()).toEqual({ provider: null, preferredProvider: null, defaultProvider: null,
+      providers: [{ id: 'deepseek', model: null }, { id: 'openai', model: null }] });
+    expect((await client.call('/analysis/settings', 'PUT', { provider: 'openai' }, { origin: 'https://other.invalid' })).status).toBe(403);
+    expect((await client.call('/analysis/settings', 'PUT', { provider: 'openai' }, { 'x-csrf-token': '' })).status).toBe(403);
+    const invalid = await client.call('/analysis/settings', 'PUT', { provider: 'openai', apiKey: 'fictional-client-key' });
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toEqual({ code: 'AI_INVALID_PROVIDER' });
+    const unavailable = await client.call('/analysis/settings', 'PUT', { provider: 'openai' });
+    expect(unavailable.status).toBe(409);
+    expect(await unavailable.json()).toEqual({ code: 'AI_PROVIDER_UNAVAILABLE' });
+    expect((await pool.query('SELECT provider FROM zj_analysis_preferences WHERE account_id=$1', [ownerId])).rowCount).toBe(0);
+  });
+  it('applies and persists provider settings across sessions and rejects stale analysis consent', async () => {
+    const deepseek = { apiKey: 'fictional-deepseek-key', model: 'deepseek-flash' };
+    const openai = { apiKey: 'fictional-openai-key', model: 'gpt-6.1-sol' };
+    const localFetch = globalThis.fetch;
+    const upstream: string[] = [];
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+      if (url.hostname === '127.0.0.1') return localFetch(input, init);
+      upstream.push(url.href);
+      return Promise.reject(new Error('External fetch blocked in provider settings tests'));
+    });
+    let configured: Awaited<ReturnType<typeof createApplication>> | undefined;
+    const start = async (providers: NonNullable<AppConfig['analysis']>['providers']) => {
+      configured = await createApplication({ ...config, analysis: { defaultProvider: 'deepseek', providers, timeoutMs: 1000 } }, pool);
+      await configured.app.listen(0, '127.0.0.1');
+      return new Client((await configured.app.getUrl()) + '/api');
+    };
+    const stop = async () => {
+      const running = configured;
+      configured = undefined;
+      await running?.close();
+    };
+    try {
+      let client = await start({ deepseek, openai });
+      expect((await client.login()).response.status).toBe(200);
+      expect(await (await client.call('/analysis/status')).json()).toMatchObject({ available: true, provider: 'deepseek' });
+      const selected = await client.call('/analysis/settings', 'PUT', { provider: 'openai' });
+      expect(selected.status).toBe(200);
+      expect(await selected.json()).toEqual({ provider: 'openai', preferredProvider: 'openai', defaultProvider: 'deepseek',
+        providers: [{ id: 'deepseek', model: deepseek.model }, { id: 'openai', model: openai.model }] });
+      expect(await (await client.call('/analysis/status')).json()).toMatchObject({ available: true, provider: 'openai' });
+      const stale = await client.call('/analysis/interaction', 'POST', { title: '虚构交往', content: '我与小岚见面。' },
+        { 'x-interaction-ai-provider': 'deepseek' });
+      expect(stale.status).toBe(409);
+      expect(await stale.json()).toEqual({ code: 'AI_PROVIDER_CHANGED' });
+      expect(upstream).toHaveLength(0);
+
+      await stop();
+      await migrate(pool);
+      client = await start({ deepseek });
+      expect((await client.login()).response.status).toBe(200);
+      expect(await (await client.call('/analysis/settings')).json()).toMatchObject({ provider: 'openai', preferredProvider: 'openai',
+        providers: [{ id: 'deepseek', model: deepseek.model }, { id: 'openai', model: null }] });
+      expect(await (await client.call('/analysis/status')).json()).toEqual({ available: false });
+      const reset = await client.call('/analysis/settings', 'PUT', { provider: null });
+      expect(reset.status).toBe(200);
+      expect(await reset.json()).toMatchObject({ provider: 'deepseek', preferredProvider: null });
+      expect(await (await client.call('/analysis/status')).json()).toMatchObject({ available: true, provider: 'deepseek' });
+      expect(upstream).toHaveLength(0);
+    } finally {
+      fetchMock.mockRestore();
+      await stop();
+    }
   });
   it('persists SID digests and never revives a destroyed SID despite racing/late saves', async () => {
     for (let n = 0; n < 8; n++) {

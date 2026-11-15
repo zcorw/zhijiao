@@ -1,0 +1,85 @@
+{
+  "name": "@zcorw/encrypted-vault",
+  "version": "0.2.0",
+  "description": "Client encryption, injectable local persistence and database-independent revision synchronization.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "NOTICE.md",
+    "docs"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "import": "./dist/protocol.js"
+    },
+    "./crypto": {
+      "types": "./dist/crypto.d.ts",
+      "import": "./dist/crypto.js"
+    },
+    "./storage": {
+      "types": "./dist/storage.d.ts",
+      "import": "./dist/storage.js"
+    },
+    "./transport": {
+      "types": "./dist/transport.d.ts",
+      "import": "./dist/transport.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    },
+    "./client": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./adapters/memory": {
+      "types": "./dist/adapters/memory.d.ts",
+      "import": "./dist/adapters/memory.js"
+    },
+    "./adapters/postgres": {
+      "types": "./dist/adapters/postgres.d.ts",
+      "import": "./dist/adapters/postgres.js"
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src tests examples scripts",
+    "test": "vitest run --configLoader runner",
+    "test:integration": "vitest run --config vitest.integration.config.ts --configLoader runner",
+    "prepack": "npm run build",
+    "export:vendor": "node scripts/export-vendor.mjs"
+  },
+  "dependencies": {
+    "zod": "4.6.7"
+  },
+  "peerDependencies": {
+    "pg": "^8.23.0"
+  },
+  "peerDependenciesMeta": {
+    "pg": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.1",
+    "@types/node": "22.18.6",
+    "@types/pg": "8.16.0",
+    "eslint": "9.39.1",
+    "fake-indexeddb": "6.2.4",
+    "pg": "8.23.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.46.1",
+    "vitest": "3.2.4",
+    "vite": "7.3.7"
+  }
+}

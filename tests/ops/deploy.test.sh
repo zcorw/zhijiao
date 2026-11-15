@@ -16,8 +16,17 @@ prepare_case() {
   mkdir -p "$case_root/scripts/ops" "$case_root/bin" "$case_root/log" "$case_root/state" "$case_root/backups"
   cp "$repo_root/scripts/ops/common.sh" "$repo_root/scripts/ops/deploy.sh" "$case_root/scripts/ops/"
   printf 'services: {}\n' >"$case_root/compose.yaml"
-  if [[ "$2" == overlay ]]; then printf 'services: {}\n' >"$case_root/compose.deepseek.yaml"; fi
+  printf 'services: {}\n' >"$case_root/compose.openai.yaml"
+  printf 'services: {}\n' >"$case_root/compose.deepseek.yaml"
   printf 'APP_ORIGIN=https://fictional.example.invalid\nAPP_IMAGE=%s\n' "$old_image" >"$case_root/.env"
+  mkdir -p "$case_root/.local/secrets" "$case_root/.local/analysis keys"
+  if [[ "$2" == openai || "$2" == both ]]; then
+    printf 'fictional-openai-key\n' >"$case_root/.local/analysis keys/openai"
+    printf 'OPENAI_API_KEY_PATH=./.local/analysis keys/openai\n' >>"$case_root/.env"
+  fi
+  if [[ "$2" == deepseek || "$2" == both ]]; then
+    printf 'fictional-deepseek-key\n' >"$case_root/.local/secrets/deepseek-api-key"
+  fi
   printf 'APP_IMAGE=%s\n' "$old_image" >"$case_root/state/deployment-$project.env"
   printf 'fictional-public-recipient\n' >"$case_root/recipient"
   cat >"$case_root/bin/docker" <<'MOCK'
@@ -35,8 +44,13 @@ for argument in "$@"; do
   case "$argument" in config|pull|stop|exec|run|up) operation=$argument; break ;; esac
 done
 [[ -n "$operation" ]] || exit 82
+if [[ "$operation" == config && "${!#}" == --environment ]]; then operation=config-env; fi
 printf '%s\n' "$operation" >>"$MOCK_LOG_DIR/commands"
 if [[ "$operation" == "${MOCK_FAIL_COMMAND:-}" ]]; then exit 83; fi
+if [[ "$operation" == config-env ]]; then
+  cat "$ENV_FILE"
+  printf 'OPENAI_API_KEY=fictional-never-print-this\n'
+fi
 if [[ "$operation" == exec ]]; then printf 'fictional-database-backup\n'; fi
 if [[ "$operation" == run ]]; then
   # Migration may start only after a completed backup and checksum exist.
@@ -70,6 +84,7 @@ run_case() {
     MOCK_LOG_DIR="$case_root/log" MOCK_FAIL_COMMAND="$failure" \
     APP_IMAGE="$old_image" \
     bash "$case_root/scripts/ops/deploy.sh" "$new_image" >"$case_root/deploy.log" 2>&1 || actual_status=$?
+  if grep -Fq 'fictional-never-print-this' "$case_root/deploy.log"; then fail 'environment resolution printed a key'; fi
   if [[ "$expected_status" == success ]]; then
     [[ "$actual_status" == 0 ]] || fail "deployment failed; see $case_root/deploy.log"
     [[ "$(cat "$case_root/state/deployment-$project.env")" == "APP_IMAGE=$new_image" ]] || fail 'successful deployment did not save the new image'
@@ -86,11 +101,14 @@ assert_calls() {
   local actual_commands number index
   actual_commands=$(paste -sd ',' "$case_root/log/commands")
   [[ "$actual_commands" == "$expected_commands" ]] || fail "unexpected command order: $actual_commands"
-  local prefix=(compose --project-directory "$case_root" --project-name "$project" --env-file "$case_root/.env" --env-file "$case_root/state/deployment-$project.env" -f "$case_root/compose.yaml")
-  if [[ "$overlay" == overlay ]]; then prefix+=(-f "$case_root/compose.deepseek.yaml"); fi
+  local base=(compose --project-directory "$case_root" --project-name "$project" --env-file "$case_root/.env" --env-file "$case_root/state/deployment-$project.env" -f "$case_root/compose.yaml")
   read -r number <"$case_root/log/count"
   for ((index = 1; index <= number; index++)); do
-    local arguments=()
+    local arguments=() prefix=("${base[@]}")
+    if [[ "$index" != 1 ]]; then
+      if [[ "$overlay" == deepseek || "$overlay" == both ]]; then prefix+=(-f "$case_root/compose.deepseek.yaml"); fi
+      if [[ "$overlay" == openai || "$overlay" == both ]]; then prefix+=(-f "$case_root/compose.openai.yaml"); fi
+    fi
     mapfile -d '' -t arguments <"$case_root/log/$index.args"
     [[ ${#arguments[@]} -gt ${#prefix[@]} ]] || fail 'Docker command lost its Compose prefix'
     local argument_index
@@ -103,28 +121,26 @@ assert_calls() {
   done
 }
 
-prepare_case with-overlay overlay
-run_case '' success
-assert_calls overlay 'config,pull,stop,exec,run,up'
-printf 'PASS: overlay survives configuration, pull, backup, migration and startup; paths with spaces and new image state remain correct.\n'
+for providers in openai deepseek both none; do
+  prepare_case "providers-$providers" "$providers"
+  run_case '' success
+  assert_calls "$providers" 'config-env,config,pull,stop,exec,run,up'
+  printf 'PASS: deployment loads the correct overlays for %s.\n' "$providers"
+done
 
-prepare_case without-overlay base
-run_case '' success
-assert_calls base 'config,pull,stop,exec,run,up'
-printf 'PASS: an absent optional overlay preserves the base deployment flow.\n'
-
-for failure in config pull run up; do
-  prepare_case "failed-$failure" overlay
+for failure in config-env config pull run up; do
+  prepare_case "failed-$failure" both
   run_case "$failure" failure
   case "$failure" in
-    config) expected='config' ;;
-    pull) expected='config,pull' ;;
-    run) expected='config,pull,stop,exec,run' ;;
-    up) expected='config,pull,stop,exec,run,up' ;;
+    config-env) expected='config-env' ;;
+    config) expected='config-env,config' ;;
+    pull) expected='config-env,config,pull' ;;
+    run) expected='config-env,config,pull,stop,exec,run' ;;
+    up) expected='config-env,config,pull,stop,exec,run,up' ;;
   esac
-  assert_calls overlay "$expected"
+  assert_calls both "$expected"
   printf 'PASS: %s failure stops the sequence and preserves the previous deployment state.\n' "$failure"
 done
 
-printf '6 mock deployment cases passed. No Docker engine, real age encryption, network or VPS was used.\n'
+printf '9 mock deployment cases passed. No Docker engine, real age encryption, network or VPS was used.\n'
 printf 'Fictional test evidence: %s\n' "$work_root"

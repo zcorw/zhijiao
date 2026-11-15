@@ -1,0 +1,30 @@
+{
+  "name": "@zcorw/encrypted-vault",
+  "version": "0.2.0",
+  "algorithm": "sha256",
+  "files": {
+    "NOTICE.md": "fbaf3979c310af9310af4e021251ea2d318899f58ea9dda074798bdc7a5075fc",
+    "README.md": "51073e122595672a3a0c12c6e8c7997d3825c309362ba9e4cf89400744aec039",
+    "docs/verification.md": "eea5e389ca1dd845753b95807f6c2783c97872871dbede398c99ed56b3dcc30c",
+    "package.json": "f06db0e6b0abab0625824db25b5c2f1562009d7b2c9bd4ccd187dc2ae4aa7208",
+    "scripts/build.mjs": "0d2b161e32e183994a3db9cfee46d84466f3d3c458a34a955399079ff74955ce",
+    "src/adapter.ts": "7cd01febf31f321a3e211affeef17f08139fc4305ae818ef587cd1806e0519c8",
+    "src/adapters/memory.ts": "ae1377327a46c1a6042a3c81bdc86cc173acca04439970e46854287a5ef2bf11",
+    "src/adapters/postgres-schema.ts": "535697110b374b4260707ee5ed8af5a796dc7e65f74cca6eb81eaecd185bfbb9",
+    "src/adapters/postgres.ts": "3ae60d5de591b68d6b2d73511f66ef65be2f6bd192e7da3449c5abcb180ceb60",
+    "src/backup.ts": "0cbfa89787064098af77a9c478bef8f9178ab34b6d05d58ec16dd25d772be412",
+    "src/client.ts": "e2785ed53704261b83e333a81d8199d0da7ac8373c67f6b915650e0829799bbc",
+    "src/crypto.ts": "cb7cbe9490751dee0f93e25865468756352a5f81e92ce82de793bac741ab4d03",
+    "src/index.ts": "1825053c9ace8862d272a949ac4daf2f10c37d7b19a8bebe5afa6a73c47cc6a5",
+    "src/protocol.ts": "70d8b4ef6f8c2f184441a96719b9f363b597a221b7e6ade628980c437c7b1d57",
+    "src/repository.ts": "a03a4acbbeb285a4252313895fa8d9cca89eb3bcb2d4658b15ee2ac80c237db2",
+    "src/server.ts": "88f69c3f8231b11a04c89affa8d2363cde304917b72984ccea0eb01e4b974e8f",
+    "src/storage.ts": "6b1c47954c80ccf7c7dbdba0f67cfea0a4c6eb6a2a4bb83d6cebdc4434a28d26",
+    "src/transport.ts": "2c27702bd7a638ccac916007bde6dc02898f5dd2ba642a8ea26d0037d7fef729",
+    "tsconfig.json": "6c66f4fde4f8c6d3242905b1596cbbedccb5e9cb8804a54ebb6de268863882e7"
+  },
+  "source": {
+    "repository": "https://github.com/zcorw/encrypted-vault",
+    "commit": "a5935144be63846a5f6b79bc392cb140efe29a62"
+  }
+}

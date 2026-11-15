@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { interactionAnalysisRequestSchema, interactionAnalysisSchema, validateAnalysisEvidence, interactionModelResultSchema,
   validateInteractionModelResult, normalizeInteractionModelResult, INTERACTION_ANALYSIS_MODEL_SCHEMA, INTERACTION_ANALYSIS_PROMPT,
@@ -56,15 +59,47 @@ describe('interaction analysis candidate contract', () => {
 
 describe('optional interaction AI configuration', () => {
   const required = { SESSION_SECRET: 'fictional-session-secret-for-tests-only' };
-  const configured = { ...required, DEEPSEEK_API_KEY: 'fictional-key', DEEPSEEK_MODEL: 'example-model' };
-  it('defaults to disabled and only enables when an API key exists', () => {
+  const configured = { ...required, OPENAI_API_KEY: ' fictional-key ', OPENAI_MODEL: ' gpt-6-luna ' };
+  it('infers the provider for either existing single-key setup', () => {
     expect(loadConfig(required).analysis).toBeUndefined();
-    expect(loadConfig({ ...required, DEEPSEEK_MODEL: 'example-model' }).analysis).toBeUndefined();
-    expect(loadConfig(configured).analysis).toEqual({ apiKey: 'fictional-key', model: 'example-model', timeoutMs: 300000 });
-    expect(loadConfig({ ...required, DEEPSEEK_API_KEY: 'fictional-key' }).analysis?.model).toBe('deepseek-flash');
+    expect(loadConfig({ ...required, OPENAI_MODEL: 'gpt-6-luna' }).analysis).toBeUndefined();
+    expect(loadConfig({ ...required, DEEPSEEK_API_KEY: 'fictional-legacy-key' }).analysis).toEqual({
+      defaultProvider: 'deepseek', providers: { deepseek: { apiKey: 'fictional-legacy-key', model: 'deepseek-flash' } }, timeoutMs: 300000,
+    });
+    expect(loadConfig(configured).analysis).toEqual({
+      defaultProvider: 'openai', providers: { openai: { apiKey: 'fictional-key', model: 'gpt-6-luna' } }, timeoutMs: 300000,
+    });
+    expect(loadConfig({ ...required, OPENAI_API_KEY: 'fictional-key' }).analysis?.providers.openai?.model).toBe('gpt-6.1-sol');
+  });
+  it('keeps both keys available and honors the explicit default even when that key is missing', () => {
+    const both = { ...configured, DEEPSEEK_API_KEY: 'fictional-deepseek-key', DEEPSEEK_MODEL: ' custom-deepseek-model ' };
+    expect(loadConfig(both).analysis?.defaultProvider).toBe('deepseek');
+    expect(loadConfig({ ...both, INTERACTION_AI_PROVIDER: 'openai' }).analysis).toEqual({
+      defaultProvider: 'openai', timeoutMs: 300000,
+      providers: {
+        deepseek: { apiKey: 'fictional-deepseek-key', model: 'custom-deepseek-model' },
+        openai: { apiKey: 'fictional-key', model: 'gpt-6-luna' },
+      },
+    });
+    expect(loadConfig({ ...configured, INTERACTION_AI_PROVIDER: 'deepseek' }).analysis).toMatchObject({
+      defaultProvider: 'deepseek', providers: { openai: { model: 'gpt-6-luna' } },
+    });
+    expect(() => loadConfig({ ...required, INTERACTION_AI_PROVIDER: 'other' })).toThrow('INTERACTION_AI_PROVIDER');
+  });
+  it.each(['OPENAI', 'DEEPSEEK'] as const)('prefers the mounted %s secret file over the environment key', prefix => {
+    const directory = mkdtempSync(join(tmpdir(), 'zhijiao-analysis-key-'));
+    const keyFile = join(directory, 'key');
+    try {
+      writeFileSync(keyFile, '  fictional-mounted-key\n');
+      const loaded = loadConfig({ ...required, [`${prefix}_API_KEY`]: 'fictional-environment-key', [`${prefix}_API_KEY_FILE`]: keyFile });
+      expect(loaded.analysis?.providers[prefix === 'OPENAI' ? 'openai' : 'deepseek']?.apiKey).toBe('fictional-mounted-key');
+    } finally {
+      rmSync(keyFile, { force: true });
+      rmdirSync(directory);
+    }
   });
   it('does not expose a configurable destination and rejects unsafe timeout bounds', () => {
-    expect(loadConfig({ ...configured, INTERACTION_AI_BASE_URL: 'https://other.example.invalid' }).analysis).not.toHaveProperty('baseUrl');
+    expect(loadConfig({ ...configured, OPENAI_BASE_URL: 'https://other.example.invalid' }).analysis).not.toHaveProperty('baseUrl');
     expect(loadConfig({ ...configured, INTERACTION_AI_TIMEOUT_MS: '600000' }).analysis?.timeoutMs).toBe(600000);
     for (const timeout of ['0', '999', 'NaN', '600001']) expect(() => loadConfig({ ...configured, INTERACTION_AI_TIMEOUT_MS: timeout })).toThrow();
   });
@@ -334,7 +369,9 @@ describe('canonical v3 interaction analysis', () => {
     const before = structuredClone(result);
     expect(JSON.stringify(result.statements[0]).length).toBeLessThan(1000);
     expect(valid(result, content)).toBe(true);
-    expect(new TextEncoder().encode(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(result) } }] })).byteLength).toBeLessThan(256 * 1024);
+    const response = { status: 'completed', output: [{ type: 'message', role: 'assistant', status: 'completed',
+      content: [{ type: 'output_text', text: JSON.stringify(result) }] }] };
+    expect(new TextEncoder().encode(JSON.stringify(response)).byteLength).toBeLessThan(256 * 1024);
     expect(() => normalizeInteractionModelResult(result)).toThrow();
     expect(result).toEqual(before);
   });

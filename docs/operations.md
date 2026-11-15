@@ -20,6 +20,52 @@
 
 生产外部访问经可信 HTTPS 反向代理，再转发到宿主 loopback 应用端口。仅开启 HTTPS 后才使用生产登录 Cookie。反代应替换不可信的转发头，并限制请求体大小、连接超时及暴露路径。暂未提供具体域名或反代供应商配置，不应为测试而关闭 Cookie、Origin、CSRF 或数据库认证。
 
+### Nginx：分析约一分钟返回 504
+
+交往分析是非流式请求，等待当前分析服务完整输出后才返回结果。Nginx 的 `proxy_read_timeout` 默认 60 秒，衡量两次读取上游数据之间的等待；应用的 300 秒超时不会自动改变 Nginx 配置。站点其他请求正常、只有分析约一分钟返回 `504 Gateway Timeout` 时，应优先核对实际转发该请求的 location 的读取超时。[Nginx 官方说明](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_read_timeout)（2026-10-25 核对）。
+
+在现有站点中，找到实际处理 `/api/analysis/interaction`、包含 `proxy_pass` 的 location，将已有 `proxy_read_timeout` 改为下值；没有时在同一块内添加。保留原有 upstream、Host/转发头、HTTPS 及认证配置：
+
+```nginx
+proxy_read_timeout 330s;
+```
+
+后端 `INTERACTION_AI_TIMEOUT_MS=300000` 时，330 秒为其留出返回错误或结果的余量。如果后端配置为 600000，则相应使用 630 秒。更具体的 `/api/` 或 `/api/analysis/` location 可覆盖 server 或 `/` 中的配置，应修改真正命中的块。`proxy_connect_timeout` 控制建立连接，`proxy_send_timeout` 控制向上游发送请求，都不能代替本场景的读取等待。
+
+宿主机安装的 Nginx，配置检查通过后再重载：
+
+```sh
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+容器或面板管理的 Nginx 应使用其配置检查与重载入口。仅改 Nginx 超时时不需要重新构建知交镜像；若同时修改 `.env` 中应用超时，需要按下文现有部署配置重新创建 app 容器，使环境值生效。504 发生时后端可能仍在分析，应用不会自动重复付费请求；调整配置后再主动验证。
+
+### 分析返回 502：检查应用超时及诊断码
+
+应用自身分析超时也返回 HTTP 502。以下命令在原部署目录读取运行中的超时配置。
+
+```sh
+docker compose -f compose.yaml exec -T app node -p "process.env.INTERACTION_AI_TIMEOUT_MS || '(unset)'"
+```
+
+`60000` 表示应用仍只允许等待 60 秒；它会覆盖镜像中的 300 秒默认值。先将 `.env` 中的 `INTERACTION_AI_TIMEOUT_MS` 改为 `300000`，再重新创建 app 容器。[`docker compose restart` 不会载入配置中的新环境变量](https://docs.docker.com/reference/cli/docker/compose/restart/)；修改配置不要求重新构建镜像。
+
+下面以同时启用两个服务为例。仅启用一个服务时，从 `compose_files` 移除另一服务对应的 `-f`。先取得当前容器的镜像引用再传给 Compose，避免 `.env` 的旧 `APP_IMAGE` 覆盖升级脚本记录的固定 digest。如原部署使用了额外的 `-p` 或 `--env-file`，在 `compose_files` 中沿用这些参数。
+
+```sh
+compose_files=(-f compose.yaml -f compose.deepseek.yaml -f compose.openai.yaml)
+app_image=$(docker inspect "$(docker compose "${compose_files[@]}" ps -q app)" --format '{{.Config.Image}}') &&
+APP_IMAGE="$app_image" INTERACTION_AI_TIMEOUT_MS=300000 \
+  docker compose "${compose_files[@]}" \
+  up -d --no-deps --no-build --pull never --force-recreate --wait --wait-timeout 90 app
+
+docker compose "${compose_files[@]}" exec -T app node -p "process.env.INTERACTION_AI_TIMEOUT_MS"
+```
+
+预期最后输出 `300000`。这一步使用当前镜像和已选密钥挂载重新创建 app。app 会短暂停止服务。[Compose up 选项说明](https://docs.docker.com/reference/cli/docker/compose/up/)。Nginx 的 `proxy_read_timeout 330s` 可保留。
+
+新版分析接口只返回固定诊断码及受限数字，不透传供应商错误正文、模型内容、校验路径或堆栈。`AI_TIMEOUT / TIMEOUT` 表示应用配置期限到达；`AI_FAILED / UPSTREAM_HTTP` 附供应商 HTTP 状态；`UPSTREAM_NETWORK` 表示上游网络失败；`MODEL_SCHEMA`、`MODEL_EVIDENCE`、`MODEL_SEMANTICS` 表示不同结果校验失败；`CANDIDATE_BUDGET` 表示候选及来源内容超出完整保存预算。这些情况都不会自动重试或写入人物。前端仅限量读取 JSON 诊断；空响应、HTML 或无法识别的 502 仍需结合代理日志判断，不能仅凭状态码断言来源。旧版只有 `AI_FAILED` 或 `AI_TIMEOUT` 时仍兼容显示。
+
 `scripts/ops/init-secrets.sh` 在选定的空专用目录一次生成两个随机服务器秘密文件，拒绝覆盖已有文件，不输出值。它不生成用户密码、资料库密钥或备份解密身份。文件父目录为 `0700`，文件为 `0444`，以兼容 Compose 的只读文件秘密挂载及容器内 `node` 用户；父目录限制宿主其他用户读取。实际主机应验证目录所有者、挂载后的权限及 `node` 能读取秘密。`_FILE` 读取是服务器配置的一部分，真实秘密不得放入镜像、命令参数、Git 或日志。
 
 Compose 配置由 `.env` 作为数据读取。运维脚本不会 `source .env` 执行其中的文本。脚本执行选项由调用者环境传入：`ENV_FILE`、`COMPOSE_PROJECT_NAME`、`DEPLOY_STATE_DIR`、`BACKUP_DIR`、`AGE_RECIPIENT_FILE`、`BACKUP_RETENTION_DAYS`、`AGE_IDENTITY_FILE`、`RESTORE_PROJECT`。默认 `ENV_FILE` 是仓库根 `.env`；脚本默认项目名为 `zhijiao`，使用其他项目时显式设置 `COMPOSE_PROJECT_NAME`，与 `.env` 一致。
@@ -92,11 +138,13 @@ bash scripts/ops/deploy.sh ghcr.io/zcorw/zhijiao@sha256:<已核验的64位digest
 
 脚本要求明确固定 digest 并取得 `flock` 升级锁，校验配置、拉取新应用镜像、停止应用写入、完成加密备份、执行一次带数据库 advisory lock 的迁移，最后启动应用并等待健康检查。每一步失败都阻止后续步骤；停止写入后失败会留下停机或不健康应用，必须人工诊断恢复。脚本不会自动降级数据库或删除卷。
 
-部署目录存在 `compose.deepseek.yaml` 时，`deploy.sh` 自动在基础 `compose.yaml` 之后加载它，配置检查、拉取、备份、迁移及启动全程使用同一套配置，一次升级即可保留 DeepSeek 密钥挂载和模型设置，无需再手动执行第二次 `up`。执行前须准备好 `.env` 中 `DEEPSEEK_API_KEY_PATH` 指向的密钥文件（默认 `.local/secrets/deepseek-api-key`），并确保容器内的应用用户能够读取它；`config --quiet` 不代替密钥文件可读性检查。覆盖文件 `compose.deepseek.yaml` 不存在时沿用基础升级流程。独立备份与恢复脚本保持原有配置。
+`deploy.sh` 会读取 Compose 解析后的密钥文件路径，自动为已准备密钥的服务加载 `compose.deepseek.yaml` 或 `compose.openai.yaml`。两份密钥齐全时会加载两个覆盖文件。默认路径为 `.local/secrets/deepseek-api-key` 和 `.local/secrets/openai-api-key`，可分别通过 `.env` 中的 `DEEPSEEK_API_KEY_PATH` 和 `OPENAI_API_KEY_PATH` 覆盖。确认容器内的应用用户可以读取相应文件。 [Docker Compose config](https://docs.docker.com/reference/cli/docker/compose/config/)
+
+升级会新增保存账号服务偏好的表。`INTERACTION_AI_PROVIDER=deepseek` 或 `openai` 设置服务器默认值。账号在「设置 → 交往分析服务」保存的选择优先生效，改回「跟随服务器默认」即可使用环境配置。保存账号选择会在下一次分析时生效。
 
 `bash tests/ops/deploy.test.sh` 使用隔离的模拟 Docker/备份工具检查覆盖文件保留、路径含空格、镜像选择及失败处理，已接入 CI；不会访问真实容器或 VPS。
 
-健康成功后，本机 `.local/deployment-<项目>.env` 记录固定 digest，后续运维脚本会作为 Compose 的第二个数据文件读取它。直接调用 `docker compose` 时需同样加 `--env-file .env --env-file .local/deployment-zhijiao.env`，或将核验后的 digest 同步到 `.env`；启用 DeepSeek 时同时指定 `-f compose.yaml -f compose.deepseek.yaml`，避免误用旧的 `APP_IMAGE` 或移除密钥挂载。保留升级前 digest、备份文件和迁移版本。数据库镜像升级另行审阅，部署脚本不会顺带升级 PostgreSQL 容器。
+健康成功后，本机 `.local/deployment-<项目>.env` 记录固定 digest，后续运维脚本会作为 Compose 的第二个数据文件读取它。直接调用 `docker compose` 时需同样加 `--env-file .env --env-file .local/deployment-zhijiao.env`，或将核验后的 digest 同步到 `.env`。从基础 `-f compose.yaml` 开始，附加已启用服务对应的覆盖文件以保留密钥挂载。保留升级前 digest、备份文件和迁移版本。数据库镜像升级另行审阅，部署脚本不会顺带升级 PostgreSQL 容器。
 
 `/api/health` 的成功仅表示应用及数据库可用。升级后还需人工检查登录、解锁、人物搜索、目录状态、写入并同步到另一设备、历史恢复、头像、退出、锁定与当前会话撤销，不把容器 healthy 当作完整业务验收。
 

@@ -1,0 +1,11 @@
+# Optional OpenAI analysis overlay. Prepare the key file before starting app.
+services:
+  app:
+    environment:
+      OPENAI_API_KEY_FILE: /run/secrets/openai_api_key
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-6.1-sol}
+    secrets:
+      - openai_api_key
+secrets:
+  openai_api_key:
+    file: ${OPENAI_API_KEY_PATH:-./.local/secrets/openai-api-key}

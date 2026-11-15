@@ -25,31 +25,42 @@
 
 ## 服务配置
 
-服务器固定调用 `https://api.deepseek.com/chat/completions`。默认模型为 `deepseek-flash`，支持 `DEEPSEEK_MODEL` 指定该服务可用模型。接口与 JSON 输出方式见 [DeepSeek 官方文档](https://api-docs.deepseek.com/) 和 [JSON Output](https://api-docs.deepseek.com/guides/json_mode/)。
+在「设置 → 交往分析服务」选择服务并点击「保存分析设置」，下一次分析使用新选择。同一账号在其他设备上也使用这项设置。选择「跟随服务器默认」会使用 `INTERACTION_AI_PROVIDER`。环境变量留空时，只有一个服务配置密钥就使用该服务，两者均配置时默认使用 DeepSeek。保存服务选择仅更新服务器设置。
 
-本机 Node 服务设置 `DEEPSEEK_API_KEY_FILE` 指向密钥文件后重启；也支持由部署环境注入 `DEEPSEEK_API_KEY`。密钥不提交到 Git，不通过前端或聊天填写。`INTERACTION_AI_TIMEOUT_MS` 默认 300000（300 秒），可设 1000–600000。旧 `.env` 中显式设置的 60000 仍会保留，需要自行改为期望值并重建容器配置。未配置密钥时应用照常运行，分析窗口显示配置提示。
+| 服务 | 默认模型 | 密钥文件环境变量 | 模型环境变量 |
+| --- | --- | --- | --- |
+| DeepSeek | `deepseek-flash` | `DEEPSEEK_API_KEY_FILE` | `DEEPSEEK_MODEL` |
+| OpenAI | `gpt-6.1-sol` | `OPENAI_API_KEY_FILE` | `OPENAI_MODEL` |
 
-DeepSeek 使用 thinking enabled、reasoning_effort low、非流式 JSON object，并在提示词附完整提取结构；省略 temperature 和本地输出 token 截断参数，采用供应商默认上限。超时包含网络、思考和完整输出。应用不自动重试、不修补原始输出；结构、原文引用或来源关系不符时仍拒绝。正式三类实体由经过校验的候选适配而来，模型的局部人物 ID 不能直接作为档案 UUID。
+密钥由服务器读取。本机直接运行 Node 服务时，也可注入 `DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY`。`INTERACTION_AI_TIMEOUT_MS` 默认 300000（300 秒），可设 1000–600000。修改容器环境变量后需要重新创建 app 容器。保留当前镜像并重新加载环境变量的命令见[应用超时排查](operations.md#分析返回-502检查应用超时及诊断码)。未配置密钥的服务会在设置中标为不可用。
+
+使用 Nginx 反代时还需独立设置 `proxy_read_timeout`：后端 300 秒对应建议 330 秒。否则即便应用允许等待 300 秒，代理仍可能按默认 60 秒先返回 504。请修改该站点实际命中的代理 location 并检查、重载，见[一分钟 504 排查](operations.md#nginx分析约一分钟返回-504)。前端会单独提示网关超时，模型返回校验失败与网关等待超时应分开处理。
+
+应用返回的分析 502 会携带固定 `code`、`reason`，并按类别附上配置超时、上游状态或受限问题数。前端据此区分应用超时、上游异常、模型拒答、输出不完整和校验失败。诊断只提供固定文本和数字。旧版或代理的空响应、HTML 及无法识别的错误使用通用提示。前端最多读取 4 KiB、等待 2 秒。
+
+DeepSeek 使用 Chat Completions `https://api.deepseek.com/chat/completions`、低强度思考和 JSON 模式。OpenAI 使用 Responses API `https://api.openai.com/v1/responses`、`low` 推理和 Structured Outputs。更换 OpenAI 模型时须支持这三项能力。服务器收到结果后校验原文依据、人物引用与来源关系，再转换为可审阅的候选。超时包含网络、推理和完整输出，失败后由用户决定是否再次发起分析。参见 [OpenAI 模型目录](https://developers.openai.com/api/docs/models)及 [Structured Outputs 指南](https://developers.openai.com/api/docs/guides/structured-outputs)。
 
 三类可保存候选的单条序列化长度，加上来源、视角及责任人各角色所引用的人物身份依据，合计最多 90000 字符，为人物名称、来源说明和人工补充留出实体字段空间；同一人物承担多个角色时分别计算。超长引文或歧义说明导致超预算时整次结果会被拒绝，避免窗口提供无法完整保存的条目；原始引用不裁剪。确认后的来源说明等仍遵守既有实体 100000 字符限制。交往背景只展示，不占人物记录预算。
 
-Compose 可将密钥保存在忽略目录 `.local/secrets/deepseek-api-key`，或在 `.env` 中设置 `DEEPSEEK_API_KEY_PATH` 为已有密钥文件路径，然后使用额外配置：
+默认密钥路径为部署目录的 `.local/secrets/deepseek-api-key` 和 `.local/secrets/openai-api-key`。可在 `.env` 中用 `DEEPSEEK_API_KEY_PATH` 和 `OPENAI_API_KEY_PATH` 指定其他路径。确保容器内的应用用户能读取相应文件。使用本地源码构建并启用两家服务时，执行以下命令。
 
 ```sh
-docker compose -f compose.yaml -f compose.deepseek.yaml up -d --build app
+docker compose -f compose.yaml -f compose.deepseek.yaml -f compose.openai.yaml up -d --build app
 ```
 
-该命令需由使用者在自己的目标环境执行。普通 `compose.yaml` 无需 AI 密钥即可启动。
+只配置一个服务时，命令仅附加该服务对应的覆盖文件。普通 `compose.yaml` 可单独启动不启用分析的应用。
 
-后续升级使用 `bash scripts/ops/deploy.sh ghcr.io/zcorw/zhijiao@sha256:<已核验的64位digest>`。脚本发现部署目录中的 `compose.deepseek.yaml` 后会自动加载，保留密钥挂载和模型配置，无需升级后再执行第二次 Compose 启动。升级前仍需准备好密钥文件及既有加密备份配置，完整流程见 [运维说明](operations.md#人工升级)。
+升级已部署的实例时，将服务覆盖文件随新版一并更新，准备相应密钥文件，再用 `deploy.sh` 部署新版镜像 digest。脚本会运行数据库迁移并自动加载有密钥文件的覆盖配置。完整流程见 [运维说明](operations.md#人工升级)。
 
 ## 数据范围与验证
 
-只有在用户主动点击开始分析时，已解锁的本次标题、正文和发生日期经同源鉴权接口转发至上述 DeepSeek 地址；账号姓名、其他人物档案、历史版本、口令与加密密钥均不进入分析载荷。请求及结果不落入本项目数据库或应用日志，候选只在页面内存暂存。DeepSeek 是该功能的外部数据接收方，其处理与保留由服务方政策决定。
+用户主动点击开始分析时，本次交往的标题、正文和发生日期经同源鉴权接口发送至分析窗口显示的服务。若设置已改变，窗口会刷新服务并等待用户再次点击。账号姓名、其他人物档案、历史版本、口令与加密密钥均不进入分析载荷。候选在页面内存暂存，请求及结果不落入本项目数据库或应用日志。OpenAI 请求使用 `store: false` 关闭 Responses 应用状态存储。外部服务的数据处理遵循各自的 API 数据政策。参见 [OpenAI API 数据控制](https://developers.openai.com/api/docs/guides/your-data)。
 
 服务包含登录鉴权、已有 CSRF/Origin 检查、请求长度限制、单用户并发与请求频率限制、超时与响应体大小限制、结果结构与原文引用检查。模型输出不直接执行任何写入；确认后走现有客户端原子加密保存与 outbox 流程。关闭窗口取消浏览器等待，但已经发送到服务方的请求无法撤回。
 
-自动验证采用虚构资料与模拟 DeepSeek 响应，不会对真实私人记录发起付费分析。真实服务调用须部署者配置有效密钥后验证；本次实现不创建密钥，也不自动部署。
+自动验证采用虚构资料与模拟服务响应。实际模型权限和中文归属判断质量需要在部署者的 API 项目中用虚构样例验证。
+
+502/504 诊断补充验证：全量类型检查、Lint、235 项单元测试、完整构建及 diff 检查通过。覆盖固定失败分类、超时及并发锁释放、未知异常隔离、恶意模型字段与校验路径不透传、前端 4 KiB/2 秒边界、取消及旧版错误兼容。未发起真实 DeepSeek 请求；VPS 的 `.env`、容器及 Nginx 仍由站点操作者更新，代码未部署。
 
 2026-10-25 三类候选接入验证：`npm run typecheck`、`npm run lint`、最终 `npm test` 148/148、完整 `npm run build` 通过；新建的独立虚构 PostgreSQL 集成实例 18/18；最终构建的交往分析浏览器流程 5/5（含桌面与 390px 手机）通过。覆盖未知来源阻止写入与手动补全、其他观点采用并改写、未知事项责任澄清、事实来源追溯/加密保存/刷新持久化/去重、纯背景零写入及既有人物新建流程。额外回归保留独立转述者、同名但不同已确认档案或原文身份、无法区分身份时保守保留；局部人物编号重排或归类理由变化本身不会制造重复。
 

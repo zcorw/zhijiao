@@ -82,7 +82,7 @@ export const interactionAnalysisSchema = z.strictObject({
       const identityLength = roleIds.reduce((total, id) => total + (id ? identityBudgets.get(id) ?? 0 : 0), 0);
       // Reject the whole result instead of silently dropping or shortening immutable provenance.
       if (JSON.stringify(item).length + identityLength > INTERACTION_ANALYSIS_CANDIDATE_BUDGET) context.addIssue({
-        code: 'custom', path: [collection, index], message: '候选内容与来源说明超过可完整保存的长度预算',
+        code: 'custom', path: [collection, index], message: '候选内容与来源说明超过可完整保存的长度预算', params: { interactionAnalysisFailureReason: 'CANDIDATE_BUDGET' },
       });
     }
   }

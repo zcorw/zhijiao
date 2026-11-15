@@ -1,10 +1,9 @@
-# Optional: docker compose -f compose.yaml -f compose.deepseek.yaml up -d app
+# Optional DeepSeek analysis overlay. Prepare the key file before starting app.
 services:
   app:
     environment:
       DEEPSEEK_API_KEY_FILE: /run/secrets/deepseek_api_key
       DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
-      INTERACTION_AI_TIMEOUT_MS: ${INTERACTION_AI_TIMEOUT_MS:-300000}
     secrets:
       - deepseek_api_key
 secrets:

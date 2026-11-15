@@ -1,9 +1,16 @@
 import { readFileSync } from 'node:fs';
 import type { PoolConfig } from 'pg';
+import type { InteractionAnalysisProvider } from '@zhijiao/shared';
+
+interface InteractionAnalysisConfig {
+  defaultProvider: InteractionAnalysisProvider;
+  providers: Partial<Record<InteractionAnalysisProvider, { apiKey: string; model: string }>>;
+  timeoutMs: number;
+}
 export interface AppConfig {
   database: PoolConfig; origin: string; secret: string; secure: boolean; idleMs: number; absoluteMs: number;
   trustProxy: number; port: number; staticDir?: string;
-  analysis?: { apiKey: string; model: string; timeoutMs: number };
+  analysis?: InteractionAnalysisConfig;
 }
 function secret(name: string, env: NodeJS.ProcessEnv): string | undefined {
   const file = env[name + '_FILE'];
@@ -13,6 +20,28 @@ function integer(value: string | undefined, fallback: number, min: number, max: 
   const parsed = value === undefined ? fallback : Number(value);
   if (!Number.isInteger(parsed) || parsed < min || parsed > max) throw new Error('Invalid numeric configuration');
   return parsed;
+}
+
+function loadAnalysisConfig(env: NodeJS.ProcessEnv): InteractionAnalysisConfig | undefined {
+  const requestedDefault = env.INTERACTION_AI_PROVIDER?.trim() || undefined;
+  if (requestedDefault !== undefined && requestedDefault !== 'deepseek' && requestedDefault !== 'openai') {
+    throw new Error('INTERACTION_AI_PROVIDER must be deepseek or openai');
+  }
+
+  const providers: InteractionAnalysisConfig['providers'] = {};
+  for (const [provider, prefix, defaultModel] of [
+    ['deepseek', 'DEEPSEEK', 'deepseek-flash'],
+    ['openai', 'OPENAI', 'gpt-6.1-sol'],
+  ] as const) {
+    const apiKey = secret(`${prefix}_API_KEY`, env)?.trim();
+    if (!apiKey) continue;
+    const model = env[`${prefix}_MODEL`]?.trim() || defaultModel;
+    if (model.length > 200 || apiKey.length > 4096) throw new Error('Invalid interaction AI configuration');
+    providers[provider] = { apiKey, model };
+  }
+
+  const defaultProvider = requestedDefault ?? (providers.deepseek ? 'deepseek' : providers.openai ? 'openai' : undefined);
+  return defaultProvider ? { defaultProvider, providers, timeoutMs: integer(env.INTERACTION_AI_TIMEOUT_MS, 300000, 1000, 600000) } : undefined;
 }
 export function databaseConfig(env: NodeJS.ProcessEnv = process.env): PoolConfig {
   const connectionString = secret('DATABASE_URL', env);
@@ -30,14 +59,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (env.NODE_ENV === 'production' && url.protocol !== 'https:') throw new Error('Production APP_ORIGIN requires trusted HTTPS');
   const sessionSecret = secret('SESSION_SECRET', env);
   if (!sessionSecret || sessionSecret.length < 32) throw new Error('Configure SESSION_SECRET_FILE with at least 32 characters');
-  const analysisKey = secret('DEEPSEEK_API_KEY', env)?.trim();
-  const analysisModel = env.DEEPSEEK_MODEL?.trim() || 'deepseek-flash';
-  let analysis: AppConfig['analysis'];
-  if (analysisKey) {
-    if (analysisModel.length > 200 || analysisKey.length > 4096) throw new Error('Invalid interaction AI configuration');
-    analysis = { apiKey: analysisKey, model: analysisModel,
-      timeoutMs: integer(env.INTERACTION_AI_TIMEOUT_MS, 300000, 1000, 600000) };
-  }
+  const analysis = loadAnalysisConfig(env);
   return { database: databaseConfig(env), origin, secret: sessionSecret, secure: url.protocol === 'https:',
     idleMs: integer(env.SESSION_IDLE_MS, 86400000, 60000, 604800000),
     absoluteMs: integer(env.SESSION_ABSOLUTE_MS, 2592000000, 60000, 7776000000),

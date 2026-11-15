@@ -1,6 +1,6 @@
 import { test, expect, type Locator, type Page } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
-import type { InteractionAnalysisInput as InteractionAnalysis } from '../../packages/shared/src/index.js';
+import type { InteractionAnalysisInput as InteractionAnalysis, InteractionAnalysisProvider } from '../../packages/shared/src/index.js';
 
 // Real authentication and encrypted vault writes use only the explicitly selected
 // disposable fictional-data instance. Analysis responses never reach a provider.
@@ -93,18 +93,40 @@ async function closeDetails(page: Page, title: string) {
 }
 
 async function mockAnalysis(page: Page, initial: InteractionAnalysis = emptyResult) {
+  const providerLabels = { deepseek: 'DeepSeek · deepseek-flash', openai: 'OpenAI · gpt-6.1-sol' };
+  const providers = [{ id: 'deepseek', model: 'deepseek-flash' }, { id: 'openai', model: 'gpt-6.1-sol' }];
+  const defaultProvider = 'openai';
+  let preferredProvider: InteractionAnalysisProvider | null = null;
+  const currentProvider = () => preferredProvider ?? defaultProvider;
   let available = true;
   let result = initial;
   let delayed = false;
   let release: (() => void) | undefined;
   const requests: Array<{ title: string; content: string; occurredOn?: string }> = [];
+  const recipients: string[] = [];
+  const settingsRequests: Array<{ provider: InteractionAnalysisProvider | null }> = [];
+  const settings = () => ({ provider: currentProvider(), preferredProvider, defaultProvider, providers });
   await page.route('**/api/analysis/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (path === '/api/analysis/status' && request.method() === 'GET') {
-      await route.fulfill({ json: { available, providerLabel: 'fictional-mock' } });
+      const provider = currentProvider();
+      await route.fulfill({ json: available ? { available: true, provider, providerLabel: providerLabels[provider] } : { available: false } });
+    } else if (path === '/api/analysis/settings' && request.method() === 'GET') {
+      await route.fulfill({ json: settings() });
+    } else if (path === '/api/analysis/settings' && request.method() === 'PUT') {
+      const update = request.postDataJSON() as { provider: InteractionAnalysisProvider | null };
+      settingsRequests.push(update);
+      preferredProvider = update.provider;
+      await route.fulfill({ json: settings() });
     } else if (path === '/api/analysis/interaction' && request.method() === 'POST') {
+      const recipient = request.headers()['x-interaction-ai-provider'];
+      if (recipient !== currentProvider()) {
+        await route.fulfill({ status: 409, json: { code: 'AI_PROVIDER_CHANGED' } });
+        return;
+      }
       requests.push(request.postDataJSON());
+      recipients.push(recipient);
       const response = result;
       if (delayed) await new Promise<void>(resolve => { release = resolve; });
       // Cancellation can abort this browser request before the delayed mock ends.
@@ -112,8 +134,9 @@ async function mockAnalysis(page: Page, initial: InteractionAnalysis = emptyResu
     } else await route.abort('blockedbyclient');
   });
   return {
-    requests,
+    requests, recipients, settingsRequests,
     setAvailable(value: boolean) { available = value; },
+    setProvider(value: InteractionAnalysisProvider | null) { preferredProvider = value; },
     setResult(value: InteractionAnalysis) { result = value; },
     setDelayed(value: boolean) { delayed = value; },
     release() { release?.(); release = undefined; },
@@ -136,6 +159,35 @@ async function screenshot(page: Page, name: string) {
 
 test.describe('interaction analysis on desktop', () => {
   test.use({ viewport: { width: 1440, height: 1000 } });
+
+  test('applies a saved provider immediately and asks again if the recipient changed', async ({ page }) => {
+    const mocked = await mockAnalysis(page);
+    const title = `虚构服务切换${Date.now()}`;
+    await enter(page);
+    await createInteraction(page, title, '这次交往用于验证服务选择。');
+
+    await navigate(page, '设置');
+    const settings = page.getByRole('region', { name: '交往分析服务' });
+    await expect(settings.locator('strong')).toHaveText('OpenAI · gpt-6.1-sol');
+    await settings.getByRole('combobox', { name: '分析服务' }).selectOption('deepseek');
+    await settings.getByRole('button', { name: '保存分析设置' }).click();
+    await expect(settings.getByRole('status')).toContainText('分析设置已保存');
+    await expect(settings.locator('strong')).toHaveText('DeepSeek · deepseek-flash');
+    expect(mocked.settingsRequests).toEqual([{ provider: 'deepseek' }]);
+    expect(mocked.requests).toHaveLength(0);
+
+    const analysis = await openAnalysis(page, title);
+    await expect(analysis).toContainText('发送给 DeepSeek · deepseek-flash');
+    mocked.setProvider('openai');
+    await analysis.getByRole('button', { name: '开始分析', exact: true }).click();
+    await expect(analysis.getByRole('alert')).toContainText('分析服务已切换');
+    await expect(analysis).toContainText('发送给 OpenAI · gpt-6.1-sol');
+    expect(mocked.requests).toHaveLength(0);
+
+    await analysis.getByRole('button', { name: '重试分析', exact: true }).click();
+    await expect(analysis.getByRole('heading', { name: '这次没有可写入的候选' })).toBeVisible();
+    expect(mocked.recipients).toEqual(['openai']);
+  });
 
   test('review is explicit, selected edits persist with sources, and repeat analysis skips duplicates', async ({ page }) => {
     test.setTimeout(90000);
@@ -183,6 +235,8 @@ test.describe('interaction analysis on desktop', () => {
     const writesBefore = writes.length;
 
     let analysis = await openAnalysis(page, title);
+    await expect(analysis).toContainText('发送给 OpenAI · gpt-6.1-sol');
+    expect(mocked.requests).toHaveLength(0);
     await analysis.getByRole('button', { name: '开始分析', exact: true }).click();
     await expect(analysis.getByText('候选默认均未选中。', { exact: false })).toBeVisible();
     await expect(analysis.locator('input[type="checkbox"]:checked')).toHaveCount(0);
@@ -548,7 +602,7 @@ test.describe('interaction analysis on phone', () => {
 
     mocked.setAvailable(false);
     let analysis = await openAnalysis(page, title);
-    await expect(analysis).toContainText(/尚未配置.*分析服务/);
+    await expect(analysis).toContainText('当前分析服务不可用');
     await expect(analysis.getByRole('button', { name: '开始分析', exact: true })).toBeDisabled();
     expect(mocked.requests).toHaveLength(0);
     await analysis.getByRole('button', { name: '取消', exact: true }).click();
